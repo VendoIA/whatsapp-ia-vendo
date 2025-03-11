@@ -27,11 +27,11 @@ const appendToSheet = async (data) => {
     try {
         const auth = new google.auth.GoogleAuth({
             keyFile: path.join(process.cwd(), 'src/credentials','credentials.json'),
-            scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+            scopes: [config.GOOGLECLOUDURL], 
         });
 
         const authCliente = await auth.getClient();
-        const spreadsheetId = '1mS-LKE2rB1b3xbVBYjbgejkKBNUEORqd8V8d3kapLpU'
+        const spreadsheetId = config.SPREADSHEET_ID
 
         await addRowToSheet(authCliente, spreadsheetId, data);
         return 'Datos correctamente guardados';

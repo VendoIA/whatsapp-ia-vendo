@@ -9,4 +9,7 @@ export default {
   API_VERSION: process.env.API_VERSION,
   PORT: process.env.PORT || 3000,
   DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+  GOOGLECLOUDURL: process.env.GOOGLECLOUDURL,
+  SPREADSHEET_ID: process.env.SPREADSHEET_ID,
+  
 };
