@@ -1,4 +1,4 @@
-// src/services/messageHandler.js - VERSIÓN MEJORADA CON IA INTELIGENTE, HUMANIZADA Y MANEJO DE MENSAJES MÚLTIPLES
+// src/services/messageHandler.js - VERSIÓN CORREGIDA
 import whatsappService from './whatsappService.js';
 import appendToSheet from './googleSheetsService.js';
 import OpenAiService from './improvedDeepseekService.js';
@@ -7,219 +7,259 @@ import path from 'path';
 import config from '../config/env.js';
 
 // Buffer para mensajes consecutivos del mismo usuario
+// Clase MessageBuffer completa mejorada
 class MessageBuffer {
   constructor() {
     this.buffers = {};
     this.timeoutIds = {};
-    this.WAIT_TIME = 10000; // 10 segundos
-}
-
+    this.WAIT_TIME = 35000; // 35 segundos (aumentado de 20 para mejor experiencia)
+  }
 
   /**
    * Añade un mensaje al buffer
    */
-  /**
- * Añade un mensaje al buffer
- */
-addMessage(userId, message, callback, waitTime = null) {
-  // Verificación de seguridad para el mensaje
-  if (!message || !message.text || !message.text.body) {
-    console.error(`❌ Error: Mensaje inválido para usuario ${userId}`);
-    return true; // Procesar inmediatamente para evitar errores
-  }
-  
-  // Cancelar temporizador existente
-  if (this.timeoutIds[userId]) {
-    clearTimeout(this.timeoutIds[userId]);
-    delete this.timeoutIds[userId];
-  }
-  
-  const messageText = message.text.body.trim();
-  
-  // Asegurarse de que el buffer exista con todos sus campos inicializados
-  if (!this.buffers[userId]) {
-    this.buffers[userId] = {
-      messages: [], // Inicializar explícitamente como array vacío
-      messageObjects: [], // NUEVO: Guardar objetos de mensaje completos
-      lastTimestamp: Date.now(),
-      currentState: null,
-      originalMessageId: null
-    };
-  }
-  
-  // Verificación extra para asegurarnos que messages y messageObjects son arrays
-  if (!Array.isArray(this.buffers[userId].messages)) {
-    this.buffers[userId].messages = [];
-  }
-  if (!Array.isArray(this.buffers[userId].messageObjects)) {
-    this.buffers[userId].messageObjects = [];
-  }
-  
-  const buffer = this.buffers[userId];
-  
-  // Guardar ID original
-  if (buffer.messages.length === 0) {
-    buffer.originalMessageId = message.id;
-  }
-  
-  // Añadir mensaje al buffer
-  buffer.messages.push(messageText);
-  buffer.messageObjects.push(message); // NUEVO: Guardar objeto completo
-  buffer.lastTimestamp = Date.now();
-  
-  // Configurar tiempo de espera
-  const effectiveWaitTime = waitTime || this.WAIT_TIME;
-  
-  // MEJORADO: Verificar si debe procesarse ahora
-  if (this.isCompleteResponse(messageText, buffer.currentState)) {
-    const combinedMessage = this.getCombinedMessage(userId);
-    callback(combinedMessage);
-    return true;
-  }
-  
-  // Configurar temporizador
-  this.timeoutIds[userId] = setTimeout(() => {
-    if (this.buffers[userId] && this.buffers[userId].messages.length > 0) {
+  addMessage(userId, message, callback, waitTime = null) {
+    // Verificación de seguridad para el mensaje
+    if (!message || !message.text || !message.text.body) {
+      console.error(`❌ Error: Mensaje inválido para usuario ${userId}`);
+      return true; // Procesar inmediatamente para evitar errores
+    }
+    
+    const messageText = message.text.body.trim();
+    
+    // Detectar saludos simples para respuesta inmediata
+    if (this.isSimpleGreeting(messageText)) {
+      console.log(`👋 Detectado saludo simple, procesando inmediatamente: "${messageText}"`);
+      return true; // Procesar inmediatamente
+    }
+    
+    // Cancelar temporizador existente
+    if (this.timeoutIds[userId]) {
+      clearTimeout(this.timeoutIds[userId]);
+      delete this.timeoutIds[userId];
+    }
+    
+    // Inicializar buffer si no existe
+    if (!this.buffers[userId]) {
+      this.buffers[userId] = {
+        messages: [],
+        messageObjects: [],
+        lastTimestamp: Date.now(),
+        currentState: null,
+        originalMessageId: null
+      };
+    }
+    
+    // Guardar ID del mensaje original
+    if (this.buffers[userId].messages.length === 0) {
+      this.buffers[userId].originalMessageId = message.id;
+    }
+    
+    // Añadir mensaje al buffer
+    this.buffers[userId].messages.push(messageText);
+    this.buffers[userId].messageObjects.push(message);
+    this.buffers[userId].lastTimestamp = Date.now();
+    
+    // Verificar si debemos procesar ahora
+    if (this.isCompleteMessage(messageText, this.buffers[userId].currentState)) {
+      console.log(`✅ Mensaje completo detectado, procesando inmediatamente: "${messageText}"`);
       const combinedMessage = this.getCombinedMessage(userId);
       callback(combinedMessage);
+      return false; // Ya se procesó con el callback
     }
-    delete this.timeoutIds[userId];
-  }, effectiveWaitTime);
-  
-  return false;
-}
+    
+    // Configurar temporizador
+    const effectiveWaitTime = waitTime || this.WAIT_TIME;
+    this.timeoutIds[userId] = setTimeout(() => {
+      if (this.buffers[userId] && this.buffers[userId].messages.length > 0) {
+        console.log(`⏱️ Tiempo de buffer expirado para ${userId}, procesando mensajes combinados`);
+        const combinedMessage = this.getCombinedMessage(userId);
+        callback(combinedMessage);
+      }
+      delete this.timeoutIds[userId];
+    }, effectiveWaitTime);
+    
+    console.log(`📥 Mensaje añadido al buffer para ${userId}, esperando más mensajes o timeout`);
+    return false; // No procesar ahora, queda en buffer
+  }
 
   /**
    * Obtiene mensaje combinado
    */
-  /**
- * Obtiene mensaje combinado
- */
-getCombinedMessage(userId) {
-  if (!this.buffers[userId] || !this.buffers[userId].messages || this.buffers[userId].messages.length === 0) {
-    return null;
+  getCombinedMessage(userId) {
+    if (!this.buffers[userId] || !this.buffers[userId].messages || this.buffers[userId].messages.length === 0) {
+      return null;
+    }
+    
+    const buffer = this.buffers[userId];
+    
+    // Si solo hay un mensaje, devolver el original sin modificar
+    if (buffer.messages.length === 1 && buffer.messageObjects.length === 1) {
+      const originalMessage = { ...buffer.messageObjects[0] };
+      
+      // Limpiar buffer
+      this.buffers[userId] = {
+        messages: [],
+        messageObjects: [],
+        lastTimestamp: Date.now(),
+        currentState: buffer.currentState,
+        originalMessageId: null
+      };
+      
+      return originalMessage;
+    }
+    
+    // Crear mensaje combinado para múltiples mensajes
+    const combinedText = buffer.messages.join(' ');
+    
+    // Crear objeto de respuesta basado en el primer mensaje original
+    const firstMessage = buffer.messageObjects[0];
+    const combinedMessage = {
+      id: buffer.originalMessageId,
+      from: firstMessage.from,
+      timestamp: buffer.lastTimestamp,
+      type: 'text',
+      text: {
+        body: combinedText
+      },
+      _combined: true,
+      _originalCount: buffer.messages.length,
+      _originalMessages: [...buffer.messageObjects]
+    };
+    
+    // Limpiar buffer
+    this.buffers[userId] = {
+      messages: [],
+      messageObjects: [],
+      lastTimestamp: Date.now(),
+      currentState: buffer.currentState,
+      originalMessageId: null
+    };
+    
+    console.log(`🔄 Mensajes combinados para ${userId}: "${combinedText}" (${buffer.messages.length} mensajes)`);
+    return combinedMessage;
   }
-  
-  const buffer = this.buffers[userId];
-  
-  // Crear mensaje combinado
-  const combinedText = buffer.messages.join(' ');
-  
-  // NUEVO: Guardar referencia a los mensajes originales
-  const originalMessages = buffer.messageObjects ? [...buffer.messageObjects] : [];
-  
-  // Crear objeto de respuesta
-  const combinedMessage = {
-    id: buffer.originalMessageId,
-    from: userId,
-    timestamp: buffer.lastTimestamp,
-    type: 'text',
-    text: {
-      body: combinedText
-    },
-    _combined: true,
-    _originalCount: buffer.messages.length,
-    _originalMessages: originalMessages // NUEVO: Guardar referencia a mensajes originales
-  };
-  
-  // Limpiar buffer
-  this.buffers[userId] = {
-    messages: [],
-    messageObjects: [],
-    lastTimestamp: Date.now(),
-    currentState: buffer.currentState,
-    originalMessageId: null
-  };
-  
-  return combinedMessage;
-}
 
   /**
    * Actualiza estado actual
    */
-  // Corrección para el método updateState en la clase MessageBuffer
+  updateState(userId, state) {
+    if (!userId) {
+      console.log("⚠️ updateState llamado con userId inválido");
+      return;
+    }
 
-/**
- * Actualiza estado actual
- */
-updateState(userId, state) {
-  // Verificar que userId existe y es válido
-  if (!userId) {
-    console.log("⚠️ updateState llamado con userId inválido");
-    return; // Salir temprano si userId no es válido
+    // Inicializar buffer si no existe
+    if (!this.buffers[userId]) {
+      this.buffers[userId] = {
+        messages: [],
+        messageObjects: [],
+        lastTimestamp: Date.now(),
+        currentState: null,
+        originalMessageId: null
+      };
+    }
+    
+    // Actualizar estado
+    if (typeof state === 'string') {
+      this.buffers[userId].currentState = state;
+    } else if (typeof state === 'object' && state !== null) {
+      this.buffers[userId].currentState = state.step || null;
+    }
+    
+    console.log(`🔄 Estado actualizado para ${userId}: ${this.buffers[userId].currentState}`);
   }
-
-  // Asegurarse de que el buffer existe para este userId
-  if (!this.buffers[userId]) {
-    this.buffers[userId] = {
-      messages: [],
-      messageObjects: [], // Asegurarse de que esta propiedad esté inicializada
-      lastTimestamp: Date.now(),
-      currentState: null,
-      originalMessageId: null
-    };
-  }
-  
-  // Manejar estado como string o objeto
-  if (typeof state === 'string') {
-    this.buffers[userId].currentState = state;
-  } else if (typeof state === 'object' && state !== null) {
-    this.buffers[userId].currentState = state.step || null;
-  }
-}
 
   /**
-   * Determina si un mensaje parece completo
+   * Determina si un mensaje está completo y debe procesarse
    */
+  isCompleteMessage(text, currentState) {
+    // Si es muy corto, esperar más mensajes
+    if (text.length <= 25) {
+       // Si parece ser una continuación del mensaje anterior (ej: "Cumple 50 años")
+    // no debe tratarse como un mensaje completo
+      return false;
+    }
+    
+    // Mensajes con preguntas completas
+    if (/\b(cómo|como|qué|que|cuál|cual|cuánto|cuanto|dónde|donde|cuándo|cuando).+\?/.test(text)) {
+      return true;
+    }
+    
+    // Mensajes directos de solicitud
+    if (/\b(quiero|necesito|dame|envía|envia|manda|busco|por favor)\s+.{10,}/.test(text)) {
+      return true;
+    }
+    
+    // Mensajes largos probablemente son completos
+    if (text.length > 60) return true;
+    
+    // Mensajes con signos de puntuación al final
+    if (text.endsWith('.') || text.endsWith('!') || text.endsWith('?')) return true;
+    
+    // Respuestas según el contexto
+    if (currentState === 'name' && text.includes(' ') && text.length > 10) return true;
+    if ((currentState === 'address' || currentState === 'direccion') && /\d+/.test(text) && text.length > 15) return true;
+    if (currentState === 'confirmacion' && /(si|sí|no|claro|ok)/.test(text.toLowerCase())) return true;
+    
+    return false;
+  }
+
   /**
- * Determina si un mensaje parece completo
- */
-isCompleteResponse(text, currentState) {
-  // MEJORADO: Detectar mejor cuando un mensaje es completo
-  
-  // Mensajes con preguntas completas (incluyen verbo y signo de interrogación)
-  const hasCompleteQuestion = /\b(cómo|como|qué|que|cuál|cual|cuánto|cuanto|dónde|donde|cuándo|cuando).+\?/.test(text);
-  if (hasCompleteQuestion) return true;
-  
-  // Mensajes con solicitud directa (imperativo + objeto)
-  const hasDirectRequest = /\b(quiero|necesito|dame|envía|envia|manda|busco)\s+.{5,}/.test(text);
-  if (hasDirectRequest) return true;
-  
-  // Si el mensaje es muy largo, probablemente es completo
-  if (text.length > 40) return true;
-  
-  // Si contiene puntuación final, probablemente es completo
-  if (text.endsWith('.') || text.endsWith('!') || text.endsWith('?')) return true;
-  
-  // Reglas específicas según el estado actual
-  if (currentState === 'name' && text.includes(' ') && text.length > 10) return true;
-  if ((currentState === 'address' || currentState === 'direccion') && /\d+/.test(text) && text.length > 15) return true;
-  
-  return false;
-}
+   * Detecta si es un saludo simple
+   */
+  isSimpleGreeting(message) {
+    if (!message || typeof message !== 'string') return false;
+    
+    const messageLower = message.toLowerCase().trim();
+    const simpleGreetings = [
+      'hola', 'hello', 'hi', 'hey', 'buenas', 'buen dia', 
+      'buenos dias', 'buenos días', 'buenas tardes', 'buenas noches',
+      'saludos', 'que tal', 'qué tal', 'ola', 'ey', 'como estas', 'cómo estás'
+    ];
+    
+    // Es un saludo simple si es exactamente uno de los saludos o comienza con él
+    // y es un mensaje corto (menos de 25 caracteres)
+    const isSimple = (
+      simpleGreetings.includes(messageLower) || 
+      simpleGreetings.some(greeting => 
+        messageLower === greeting || 
+        messageLower === greeting + '!' ||
+        messageLower.startsWith(greeting + ' ')
+      ) && message.length < 25
+    );
+    
+    if (isSimple) {
+      console.log(`🔎 Detectado saludo simple: "${message}"`);
+    }
+    
+    return isSimple;
+  }
 
   /**
    * Limpia buffers antiguos
    */
   cleanup() {
     const now = Date.now();
-    const expiredTime = 30 * 60 * 1000;
+    const expiredTime = 30 * 60 * 1000; // 30 minutos
     
     Object.keys(this.buffers).forEach(userId => {
       if (now - this.buffers[userId].lastTimestamp > expiredTime) {
+        // Limpiar buffer antiguo
         delete this.buffers[userId];
         
+        // Limpiar temporizador si existe
         if (this.timeoutIds[userId]) {
           clearTimeout(this.timeoutIds[userId]);
           delete this.timeoutIds[userId];
         }
+        
+        console.log(`🧹 Buffer antiguo limpiado para ${userId}`);
       }
     });
   }
 }
 
-// Clase para humanizar respuestas
-// Clase para humanizar respuestas
 // Clase para humanizar respuestas
 class HumanLikeUtils {
   // Añadir variabilidad en respuestas
@@ -258,11 +298,11 @@ class HumanLikeUtils {
     return cleanedResponse;
   }
 
-  // Añadir "errores humanos" ocasionales y correcciones
-  static addHumanLikeErrors(response) {
+   // Añadir "errores humanos" ocasionales y correcciones
+   static addHumanLikeErrors(response) {
     // Solo aplicar ocasionalmente (15% del tiempo)
     if (Math.random() > 0.85) {
-      // MEJORA: Patrones de error más realistas basados en comportamiento humano real
+      // Patrones de error más realistas basados en comportamiento humano real
       const errorPatterns = [
         // Errores de tipeo de teclas adyacentes
         {pattern: /ción/g, replacement: "ciin", prob: 0.3},
@@ -274,7 +314,7 @@ class HumanLikeUtils {
         // Faltas de acentos
         {pattern: /más/g, replacement: "mas", prob: 0.5},
         {pattern: /está/g, replacement: "esta", prob: 0.5},
-        // MEJORA: Errores de espaciado como hacen los humanos
+        // Errores de espaciado como hacen los humanos
         {pattern: / /g, replacement: "  ", prob: 0.1}, // Doble espacio ocasional
         {pattern: /\./g, replacement: ". ", prob: 0.3}, // Espacio después de punto
         // Errores comunes al escribir rápido
@@ -283,42 +323,7 @@ class HumanLikeUtils {
         {pattern: /donde/g, replacement: "doned", prob: 0.2}
       ];
       
-      // MEJORA: Errores más complejos y realistas en frases
-      // A veces enviar un mensaje y luego "corregirlo"
-      if (Math.random() > 0.85 && response.length > 40) {
-        // Dividir en frases
-        const sentences = response.split('. ');
-        if (sentences.length > 1) {
-          // Seleccionar una frase aleatoria para introducir un error
-          const randomIndex = Math.floor(Math.random() * sentences.length);
-          const originalSentence = sentences[randomIndex];
-          
-          // Si la frase es lo suficientemente larga
-          if (originalSentence.length > 20) {
-            // Crear una versión con error
-            const words = originalSentence.split(' ');
-            // Elegir una palabra al azar para cambiar
-            if (words.length > 3) {
-              const wordIndex = Math.floor(Math.random() * words.length);
-              // Solo modificar palabras de cierta longitud
-              if (words[wordIndex].length > 3) {
-                // Crear un typo
-                const originalWord = words[wordIndex];
-                const typoWord = this.createTypo(originalWord);
-                words[wordIndex] = typoWord;
-                
-                // Reconstruir la frase con el error
-                sentences[randomIndex] = words.join(' ');
-                
-                // Simular que el bot envía un mensaje con error y luego lo corrige
-                return sentences.join('. ') + "\n\n*" + originalWord + ""; // Asterisco como corrección
-              }
-            }
-          }
-        }
-      }
-      
-      // MEJORA: Aplicar un patrón de error aleatorio con más inteligencia
+      // Aplicar un patrón de error aleatorio con más inteligencia
       // Elegir un patrón de error basado en lo que sería más natural para este mensaje
       const potentialPatterns = errorPatterns.filter(pattern => 
         response.match(pattern.pattern) && Math.random() < pattern.prob
@@ -332,7 +337,7 @@ class HumanLikeUtils {
           // No modificar al principio de la frase (menos natural)
           if (offset < 10 && Math.random() > 0.3) return match;
           
-          // MEJORA: 50% de probabilidad de añadir autocorrección al estilo humano
+          // 50% de probabilidad de añadir autocorrección al estilo humano
           if (Math.random() > 0.5) {
             return selectedPattern.replacement + "* " + match;
           }
@@ -457,57 +462,37 @@ class HumanLikeUtils {
     return response;
   }
 
-  // Mejorar percepción de tiempo humano (añadir retrasos variables)
+  // CORREGIDO: Mejorar percepción de tiempo humano (sin usar API de typing)
   static async simulateTypingIndicator(messageLength, messageComplexity = 'normal') {
-    // Calcular retraso basado en la longitud del mensaje
-    // Un humano real tardaría más en escribir mensajes más largos
-    const baseDelay = messageComplexity === 'complex' ? 1500 : 1000; // 1-1.5 segundos base
-    const perCharDelay = messageComplexity === 'complex' ? 30 : 20; // 20-30ms por caracter (simular velocidad de escritura)
-    
-    // Longitud mínima para evitar NaN
-    const safeLength = Math.max(messageLength || 10, 10);
-    
-    // MEJORA: Simular pausas durante la escritura como lo haría una persona real
-    // Si es un mensaje largo, añadir pausas aleatorias (como si la persona estuviera pensando)
-    let pauseFactor = 1.0;
-    if (safeLength > 80) {
-      // Mensajes largos tienen pausas más frecuentes
-      pauseFactor = 0.7 + (Math.random() * 0.8); // Entre 0.7 y 1.5
+    try {
+      // Parámetros para simular tiempos de escritura humanos
+      const baseDelay = messageComplexity === 'complex' ? 1500 : 1000;
+      const charsPerSecond = messageComplexity === 'complex' ? 5 : 8;
       
-      // Para mensajes muy largos, añadir una "pausa de pensamiento" adicional
-      if (safeLength > 150 && Math.random() > 0.6) {
-        // 40% de probabilidad de añadir una pausa extra en mensajes largos
-        const thinkingPause = 1000 + (Math.random() * 2000); // 1-3 segundos adicionales
-        await new Promise(resolve => setTimeout(resolve, thinkingPause));
-      }
+      // Longitud mínima para evitar problemas con mensajes vacíos
+      const safeLength = Math.max(messageLength || 10, 10);
+      
+      // Calcular tiempo total que tomaría escribir este mensaje
+      let typingTime = baseDelay + (safeLength / charsPerSecond) * 1000;
+      
+      // Añadir variabilidad (las personas no escriben a un ritmo constante)
+      const variabilityFactor = 0.8 + (Math.random() * 0.4);
+      typingTime *= variabilityFactor;
+      
+      // Limitar el tiempo máximo para no aburrir al usuario
+      const maxTypingTime = 5000; // 5 segundos máximo
+      typingTime = Math.min(typingTime, maxTypingTime);
+      
+      console.log(`💬 Simulando escritura por ${Math.round(typingTime/1000)} segundos...`);
+      
+      // Simplemente esperar el tiempo calculado
+      await new Promise(resolve => setTimeout(resolve, typingTime));
+      
+      return true;
+    } catch (error) {
+      console.error("Error al simular tiempo de escritura:", error);
+      return false;
     }
-    
-    // Añadir variabilidad natural - las personas no escriben a ritmo constante
-    const variabilityFactor = 0.7 + (Math.random() * 0.6); // Entre 0.7 y 1.3
-    
-    // Añadir pausa de "pensamiento" para mensajes complejos
-    const thinkingPause = messageComplexity === 'complex' ? 
-                        2000 + (Math.random() * 3000) : 0;
-    
-    // Calcular retraso con algo de aleatoriedad
-    const typingDelay = baseDelay + (safeLength * perCharDelay * variabilityFactor * pauseFactor);
-    
-    // MEJORA: Modular el retraso según si es una primera respuesta o una continuación
-    // Si acabamos de responder un mensaje hace poco, responder más rápido al siguiente
-    const lastResponseTime = this.lastResponseTimes?.get(message?.from) || 0;
-    const timeSinceLastResponse = Date.now() - lastResponseTime;
-    
-    let continuationFactor = 1.0;
-    if (timeSinceLastResponse < 10000) { // Menos de 10 segundos desde la última respuesta
-      // Responder más rápido a preguntas de seguimiento
-      continuationFactor = 0.6 + (Math.random() * 0.2); // Entre 0.6 y 0.8
-    }
-    
-    // Limitar el retraso máximo a 8 segundos para no frustrar a los usuarios
-    const cappedDelay = Math.min(typingDelay * continuationFactor + thinkingPause, 8000);
-    
-    // Aplicar el retraso
-    return new Promise(resolve => setTimeout(resolve, cappedDelay));
   }
   
   // Método integrado para generar respuestas humanizadas
@@ -595,66 +580,6 @@ class HumanLikeUtils {
     // 3. Devolver el contenido humanizado después del retraso
     return humanizedContent;
   }
-
-  // Añade este método al final de la clase HumanLikeUtils, justo antes de cerrar la clase con }
-static async simulateTypingIndicator(to, messageLength, messageId, complexity = 'normal') {
-  try {
-    // Parámetros para simular tiempos de escritura humanos
-    const baseDelay = complexity === 'complex' ? 2000 : 1200;
-    const charsPerSecond = complexity === 'complex' ? 5 : 8;
-    
-    // Longitud mínima para evitar problemas con mensajes vacíos
-    const safeLength = Math.max(messageLength || 10, 10);
-    
-    // Calcular tiempo total que tomaría escribir este mensaje
-    let typingTime = baseDelay + (safeLength / charsPerSecond) * 1000;
-    
-    // Añadir variabilidad (las personas no escriben a un ritmo constante)
-    const variabilityFactor = 0.8 + (Math.random() * 0.4);
-    typingTime *= variabilityFactor;
-    
-    // Limitar el tiempo máximo para no aburrir al usuario
-    const maxTypingTime = 8000; // 8 segundos máximo
-    typingTime = Math.min(typingTime, maxTypingTime);
-    
-    console.log(`💬 Simulando escritura por ${Math.round(typingTime/1000)} segundos...`);
-    
-    // Para mensajes muy largos, enviar una indicación visual
-    if (typingTime > 5000 && safeLength > 100) {
-      const intermediateTime = Math.floor(typingTime / 3);
-      await new Promise(resolve => setTimeout(resolve, intermediateTime));
-      
-      // 30% de probabilidad de enviar mensaje intermedio
-      if (Math.random() > 0.7) {
-        try {
-          const typingIndicators = [
-            "Escribiendo...",
-            "...",
-            "Un momento...",
-            "Preparando respuesta..."
-          ];
-          
-          const indicator = typingIndicators[Math.floor(Math.random() * typingIndicators.length)];
-          await whatsappService.sendMessage(to, indicator, messageId);
-          
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        } catch (err) {
-          console.log("⚠️ No se pudo enviar indicador intermedio");
-        }
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, typingTime - intermediateTime));
-    } else {
-      // Para mensajes cortos, simplemente esperar el tiempo calculado
-      await new Promise(resolve => setTimeout(resolve, typingTime));
-    }
-    
-    return true;
-  } catch (error) {
-    console.error("Error al simular indicador de escritura:", error);
-    return false;
-  }
-}
   
   // Método para detectar si un mensaje requiere una respuesta rápida
   static requiresQuickResponse(message) {
@@ -690,7 +615,7 @@ static async simulateTypingIndicator(to, messageLength, messageId, complexity = 
     return 'normal';
   }
 
-  // MEJORA: Método para hacer que las respuestas a consultas similares varíen
+  // Método para hacer que las respuestas a consultas similares varíen
   static introduceResponseVariation(response, userId, messageType) {
     // Mantener un registro de respuestas anteriores para evitar repetición
     if (!this.previousResponses) {
@@ -797,29 +722,50 @@ static async simulateTypingIndicator(to, messageLength, messageId, complexity = 
     this.previousResponses.set(userId, userResponses);
     return response;
   }
-
-  // Método auxiliar para calcular similitud entre textos (simplificado)
-  static calculateSimilarity(str1, str2) {
-    // Si las longitudes son muy diferentes, considerar baja similitud
-    const lengthDiff = Math.abs(str1.length - str2.length) / Math.max(str1.length, str2.length);
-    if (lengthDiff > 0.3) return 0;
-    
-    // Comparar palabras en común
-    const words1 = str1.toLowerCase().split(/\s+/);
-    const words2 = str2.toLowerCase().split(/\s+/);
-    
-    const commonWords = words1.filter(w => words2.includes(w));
-    const similarity = (2 * commonWords.length) / (words1.length + words2.length);
-    
-    return similarity;
-  }
-
-  // MEJORA: Método para registrar cuándo se envió la última respuesta a un usuario
+  
+  // Método para registrar cuándo se envió la última respuesta a un usuario
   static trackResponseTime(userId) {
     if (!this.lastResponseTimes) {
       this.lastResponseTimes = new Map();
     }
     this.lastResponseTimes.set(userId, Date.now());
+  }
+  
+  // Método auxiliar para calcular similitud entre textos
+  static calculateSimilarity(text1, text2) {
+    // Si alguno de los textos es vacío, no hay similitud
+    if (!text1 || !text2) return 0;
+    
+    // Normalizar textos (minúsculas, sin acentos, sin signos de puntuación)
+    const normalize = (text) => {
+      return text
+        .toLowerCase()
+        .normalize("NFD") // Descomponer acentos
+        .replace(/[\u0300-\u036f]/g, "") // Eliminar acentos
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") // Eliminar puntuación
+        .replace(/\s{2,}/g, " "); // Eliminar espacios múltiples
+    };
+    
+    const normalizedText1 = normalize(text1);
+    const normalizedText2 = normalize(text2);
+    
+    // Obtener palabras únicas de cada texto
+    const words1 = new Set(normalizedText1.split(/\s+/));
+    const words2 = new Set(normalizedText2.split(/\s+/));
+    
+    // Contar palabras en común
+    let commonWords = 0;
+    for (const word of words1) {
+      if (words2.has(word)) {
+        commonWords++;
+      }
+    }
+    
+    // Calcular coeficiente de Jaccard
+    const totalWords = words1.size + words2.size - commonWords;
+    if (totalWords === 0) return 0;
+    
+    return commonWords / totalWords;
   }
 }
 
@@ -992,48 +938,51 @@ class EnhancedIntentDetector {
   }
 }
 
-// Clase principal de manejo de mensajes
+// Clase principal de manejo de mensajes con correcciones
 class MessageHandler {
   constructor() {
     this.appointmentState = {};
-  this.assistantState = {};
-  this.interactionCounter = {};
-  this.conversationHistory = {}; // Historial de conversación para contexto
-  
-  // Cache de mensajes procesados para evitar duplicados
-  this.processedMessages = new Map();
-  
-  // Cache de timestamps de mensajes para validación secuencial
-  this.messageTimestamps = new Map();
-  
-  // NUEVO: Inicializar el buffer de mensajes
-  this.messageBuffer = new MessageBuffer();
-  
-  // Inicializar gestor de perfiles de usuario
-  this.userProfiles = new UserProfileManager();
-  
-   // Asegurarse de que estas propiedades estén disponibles
-   this.processingMessages = new Map();
-   this.MAX_PROCESSING_TIME = 5 * 60 * 1000;
-   
-   // Inicializar el buffer de mensajes
-   this.messageBuffer = new MessageBuffer();
-
-  // Cache para órdenes consultadas recientemente
-  this.orderCache = {
-    orders: {},
-    lastFetch: null
-  };
+    this.assistantState = {};
+    this.interactionCounter = {};
+    this.conversationHistory = {}; // Historial de conversación para contexto
     
+    // Cache de mensajes procesados para evitar duplicados
+    this.processedMessages = new Map();
+    
+    // Cache de timestamps de mensajes para validación secuencial
+    this.messageTimestamps = new Map();
+    
+    // Inicializar el buffer de mensajes
+    this.messageBuffer = new MessageBuffer();
+    
+    // Inicializar gestor de perfiles de usuario
+    this.userProfiles = new UserProfileManager();
+    
+    // Asegurarse de que estas propiedades estén disponibles
+    this.processingMessages = new Map();
+    this.MAX_PROCESSING_TIME = 5 * 60 * 1000;
+    
+    // Cache para órdenes consultadas recientemente
+    this.orderCache = {
+      orders: {},
+      lastFetch: null
+    };
+      
     // Tiempo de expiración del cache (5 minutos)
-  this.CACHE_EXPIRY = 5 * 60 * 1000;
-  
-  // Nuevo: Seguimiento de mensajes en procesamiento
-  this.processingMessages = new Map();
-  
-  // Tiempo máximo permitido para procesamiento (5 minutos)
-  this.MAX_PROCESSING_TIME = 5 * 60 * 1000;
+    this.CACHE_EXPIRY = 5 * 60 * 1000;
+    
+    // Configurar limpieza periódica del buffer
+    setInterval(() => {
+      this.messageBuffer.cleanup();
+    }, 5 * 60 * 1000); // Cada 5 minutos
 
+    // Nuevo: Timestamp de último mensaje procesado por usuario
+    this.lastProcessedTimestamp = new Map();
+    
+    // Nuevo: Tiempo de enfriamiento entre mensajes (en milisegundos)
+    this.COOLDOWN_TIME = 10000; // 10 segundos
+    
+    // Base de conocimiento de productos
     this.productKnowledge = {
       // Información general
       general: "Somos una tienda de regalos con sede de despacho en Bogotá a todo el país de Colombia. Ofrecemos rosas preservadas y productos personalizados que duran de 1-4 años. Nuestro lema es 'Regalar es amar'.",
@@ -1127,65 +1076,485 @@ class MessageHandler {
         email: "dommo.colombia@gmail.com",
         instagram: "@__dommo.co__"
       }
+
+
     };
   }
-  isMessageBeingProcessed(userId, messageId) {
-    const now = Date.now();
+
+  isSimpleGreeting(message) {
+    if (!message || typeof message !== 'string') return false;
     
-    // Limpiar entradas expiradas
-    for (const [key, data] of this.processingMessages.entries()) {
-      if (now - data.timestamp > this.MAX_PROCESSING_TIME) {
-        this.processingMessages.delete(key);
-      }
+    const messageLower = message.toLowerCase().trim();
+    const simpleGreetings = [
+      'hola', 'hello', 'hi', 'hey', 'buenas', 'buen dia', 
+      'buenos dias', 'buenos días', 'buenas tardes', 'buenas noches',
+      'saludos', 'que tal', 'qué tal', 'ola', 'ey', 'como estas', 'cómo estás'
+    ];
+    
+    // Es un saludo simple si es exactamente uno de los saludos o comienza con él
+    // y es un mensaje corto (menos de 25 caracteres)
+    const isSimple = (
+      simpleGreetings.includes(messageLower) || 
+      simpleGreetings.some(greeting => 
+        messageLower === greeting || 
+        messageLower === greeting + '!' ||
+        messageLower.startsWith(greeting + ' ')
+      ) && message.length < 25
+    );
+    
+    if (isSimple) {
+      console.log(`🔎 Detectado saludo simple: "${message}"`);
     }
     
-    // Verificar si existe un procesamiento activo para este usuario
-    const userProcessing = Array.from(this.processingMessages.values())
-      .filter(data => data.userId === userId && now - data.timestamp < 30000); // 30 segundos
-    
-    // Si hay mensajes en procesamiento para este usuario, registrarlo
-    if (userProcessing.length > 0) {
-      console.log(`⚠️ Usuario ${userId} ya tiene ${userProcessing.length} mensaje(s) en procesamiento`);
-      
-      // Registrar que este mensaje está relacionado con un procesamiento activo
-      const processingKey = `${userId}_${messageId}`;
-      this.processingMessages.set(processingKey, {
-        userId,
-        messageId,
-        timestamp: now,
-        isRelated: true,  // Marcar como relacionado a un procesamiento existente
-        relatedTo: userProcessing[0].messageId // Relacionado con el mensaje más antiguo
-      });
-      
-      return true;
-    }
-    
-    // No hay mensajes en procesamiento, registrar este como nuevo
-    const processingKey = `${userId}_${messageId}`;
-    this.processingMessages.set(processingKey, {
-      userId,
-      messageId,
-      timestamp: now,
-      isRelated: false
-    });
-    
-    return false;
+    return isSimple;
   }
-  
-  // Agregar este método para marcar cuando finaliza el procesamiento
-  finishMessageProcessing(userId, messageId) {
-    const processingKey = `${userId}_${messageId}`;
-    this.processingMessages.delete(processingKey);
-    
-    // Limpiar también mensajes relacionados
-    for (const [key, data] of this.processingMessages.entries()) {
-      if (data.userId === userId && data.relatedTo === messageId) {
-        this.processingMessages.delete(key);
+
+  // MÉTODO PRINCIPAL PARA MANEJAR MENSAJES ENTRANTES - VERSIÓN CORREGIDA
+  async handleIncomingMessage(message, senderInfo) {
+    try {
+      // Validación básica del mensaje
+      if (!message || !message.id || !message.from || !message.type || message.type !== 'text' || !message.text || !message.text.body) {
+        console.log("❌ Mensaje no válido, ignorando");
+        return;
+      }
+
+      // NUEVO: Verificar si hay un mensaje reciente de este usuario
+      const userId = message.from;
+      const lastProcessedTime = this.lastProcessedTimestamp.get(userId) || 0;
+      const now = Date.now();
+      const timeSinceLastProcessed = now - lastProcessedTime;
+      
+      // Si es un mensaje muy cercano en tiempo al anterior, forzar combinación
+      if (timeSinceLastProcessed < 5000) { // 5 segundos
+        console.log(`⚡ Mensaje muy cercano al anterior (${Math.round(timeSinceLastProcessed/1000)}s), forzando combinación`);
+        
+        // Siempre añadir al buffer, nunca procesar inmediatamente
+        this.messageBuffer.addMessage(
+          userId,
+          message,
+          (combinedMessage) => {
+            this.processMessage(combinedMessage, senderInfo);
+          }
+        );
+        
+        return;
+      }
+      
+      // Evitar procesar mensajes duplicados
+      if (this.processedMessages.has(message.id)) {
+        console.log(`🔄 Mensaje duplicado [ID: ${message.id}], ignorando`);
+        return;
+      }
+      
+      const incomingMessage = message.text.body.trim();
+      
+      console.log(`📩 Mensaje recibido de ${message.from}: "${incomingMessage}"`);
+      
+      // CORRECCIÓN: Utilizar el buffer antes de procesar el mensaje
+      // Esto permitirá agrupar mensajes relacionados y procesarlos juntos
+      const shouldProcessNow = this.messageBuffer.addMessage(
+        message.from,
+        message,
+        (combinedMessage) => {
+          // Esta función callback se ejecutará cuando el buffer esté listo para procesar
+          this.processMessage(combinedMessage, senderInfo);
+        }
+      );
+      
+      // Si el buffer indica que debemos procesar inmediatamente, lo hacemos
+      if (shouldProcessNow) {
+        await this.processMessage(message, senderInfo);
+      } else {
+        // Si no, el mensaje queda en buffer y se procesará después
+        console.log(`📌 Mensaje añadido al buffer para ${message.from}`);
+      }
+      
+    } catch (error) {
+      console.error("🔥 ERROR GLOBAL en handleIncomingMessage:", error);
+      console.error(error.stack);
+      
+      try {
+        const errorMsg = "Lo siento, estoy teniendo problemas en este momento. Por favor, intenta de nuevo en un momento o escribe 'catálogo' para ver nuestros productos.";
+        await whatsappService.sendMessage(message.from, errorMsg, message.id);
+      } catch (finalError) {
+        console.error("💀 Error fatal:", finalError);
       }
     }
   }
 
-  // Verificar si un mensaje es válido y debe ser procesado
+  // MÉTODO PRINCIPAL PARA PROCESAR MENSAJES - Corregido para manejar mensajes combinados del buffer
+  // MÉTODO PRINCIPAL PARA PROCESAR MENSAJES - Corregido para manejar mensajes combinados del buffer
+// MÉTODO PRINCIPAL PARA PROCESAR MENSAJES - Corregido para manejar mensajes combinados del buffer
+// MÉTODO PARA PROCESAR MENSAJES BASADO EN ANÁLISIS CONTEXTUAL
+async processMessage(message, senderInfo) {
+  try {
+    const incomingMessage = message.text.body.trim();
+    const userId = message.from;
+
+    // NUEVO: Verificar si hay un mensaje reciente en procesamiento
+    const lastProcessedTime = this.lastProcessedTimestamp.get(userId) || 0;
+    const now = Date.now();
+    const timeSinceLastProcessed = now - lastProcessedTime;
+    
+    // Si ha pasado poco tiempo desde el último mensaje procesado
+    if (timeSinceLastProcessed < this.COOLDOWN_TIME && !message._forceProceed) {
+      console.log(`⏱️ Mensaje recibido durante periodo de enfriamiento (${Math.round(timeSinceLastProcessed/1000)}s), añadiendo a buffer`);
+      
+      // Añadir este mensaje al buffer en lugar de procesarlo inmediatamente
+      this.messageBuffer.addMessage(
+        userId,
+        message,
+        (combinedMessage) => {
+          // Forzar procesamiento después del tiempo de espera
+          combinedMessage._forceProceed = true;
+          this.processMessage(combinedMessage, senderInfo);
+        },
+        this.COOLDOWN_TIME - timeSinceLastProcessed // Esperar el tiempo restante
+      );
+      
+      return;
+    }
+
+    // NUEVO: Actualizar timestamp de este mensaje
+    this.lastProcessedTimestamp.set(userId, now);
+    
+    // Log de recepción del mensaje
+    console.log(`🔄 MENSAJE PROCESADO [${new Date().toISOString()}]: "${incomingMessage}"`);
+    console.log(`De: ${userId}, ID: ${message.id}`);
+    
+    // Actualizar historial de conversación
+    try {
+      this.updateConversationHistory(userId, 'user', incomingMessage);
+      console.log("✅ Historial de conversación actualizado");
+    } catch (historyError) {
+      console.error("❌ Error al actualizar historial:", historyError);
+    }
+    
+    // Marcar mensaje como leído
+    try {
+      const readResult = await whatsappService.markAsRead(message.id);
+      if (readResult.success) {
+        console.log("✅ Mensaje marcado como leído");
+      } else {
+        console.log("⚠️ No se pudo marcar como leído pero continuando el flujo");
+      }
+    } catch (markReadError) {
+      console.error("❌ Error al marcar mensaje como leído:", markReadError.message);
+    }
+    
+    // VERIFICAR si es un saludo simple antes de continuar con el análisis
+    if (this.isSimpleGreeting(incomingMessage)) {
+      console.log("👋 Detectado saludo simple, respondiendo directamente");
+      try {
+        await this.sendWelcomeMessage(message.from, message.id, senderInfo);
+        this.finishMessageProcessing(message.from, message.id);
+        return;
+      } catch (welcomeError) {
+        console.error("❌ Error al enviar saludo:", welcomeError);
+        // Si falla, continuamos con el flujo normal
+      }
+    }
+    
+    // Si no es un saludo o falló el envío, continuar con análisis contextual
+    const contextAnalysis = await this.analyzeConversationContext(message.from, incomingMessage);
+    
+    // Sistema de decisión basado en el análisis contextual
+    await this.executeContextualAction(message, contextAnalysis, senderInfo);
+    
+  } catch (globalError) {
+    console.error("❌ ERROR GLOBAL en processMessage:", globalError);
+    
+    // Intentar enviar una respuesta de error humanizada
+    try {
+      const errorMessage = "Parece que estamos experimentando algunos problemas técnicos. ¿Podrías intentarlo de nuevo en unos momentos?";
+      await whatsappService.sendMessage(message.from, errorMessage, message.id);
+      this.updateConversationHistory(message.from, 'assistant', errorMessage);
+    } catch (finalError) {
+      console.error("💀 Error fatal:", finalError);
+    }
+    
+    // Intentar limpiar el estado para evitar bloquear mensajes futuros
+    try {
+      this.finishMessageProcessing(message.from, message.id);
+    } catch (error) {
+      // Ignorar cualquier error en esta etapa final
+    }
+  }
+}
+
+
+
+// NUEVO: Sistema inteligente de decisión y ejecución basado en el análisis contextual
+async executeContextualAction(message, contextAnalysis, senderInfo) {
+  const userId = message.from;
+  const messageId = message.id;
+  const incomingMessage = message.text.body.trim();
+  
+  // NUEVO: Verificar primero si es un saludo simple, sin depender del análisis de la IA
+  if (this.isSimpleGreeting(incomingMessage)) {
+    console.log("👋 Detectado saludo simple, priorizando respuesta de bienvenida");
+    try {
+      await this.sendWelcomeMessage(userId, messageId, senderInfo);
+      console.log("✅ Mensaje de bienvenida enviado en respuesta a saludo");
+      this.finishMessageProcessing(userId, messageId);
+      return;
+    } catch (welcomeError) {
+      console.error("❌ Error al enviar saludo:", welcomeError);
+      // Si falla, continuamos con el flujo normal
+    }
+  }
+
+  
+  // Determinar la acción más apropiada basada en el análisis
+  const specificAction = contextAnalysis.specificAction || "responder_consulta";
+  
+  console.log(`🧠 Ejecutando acción contextual: ${specificAction}`);
+  
+  // Estructura de decisión basada en la acción específica
+  switch(specificAction) {
+    case "enviar_catalogo":
+      // Si la IA determinó que el usuario quiere el catálogo
+      console.log("📚 Solicitado catálogo según análisis contextual");
+      try {
+        await this.sendMedia(userId, messageId);
+        console.log("✅ Catálogo enviado por decisión contextual");
+        return;
+      } catch (catalogError) {
+        console.error("❌ Error al enviar catálogo:", catalogError);
+        // Continuar con respuesta genérica si falla
+      }
+      break;
+      
+    case "iniciar_agendamiento":
+      // Si la IA determinó que el usuario quiere agendar
+      console.log("📅 Iniciando flujo de agendamiento según análisis contextual");
+      try {
+        // Iniciar flujo de agendamiento
+        this.appointmentState[userId] = { step: 'name' };
+        
+        // Generar mensaje de inicio de agendamiento
+        const agendaMsg = await this.generateContextualResponse(
+          userId,
+          'iniciar_agendamiento',
+          'Genera una respuesta para iniciar el proceso de agendamiento pidiendo los datos del cliente'
+        );
+        
+        // Simular escritura
+        await HumanLikeUtils.simulateTypingIndicator(agendaMsg.length);
+        
+        // Enviar mensaje
+        await whatsappService.sendMessage(userId, agendaMsg, messageId);
+        this.updateConversationHistory(userId, 'assistant', agendaMsg);
+        return;
+      } catch (agendamientoError) {
+        console.error("❌ Error al iniciar agendamiento:", agendamientoError);
+        // Continuar con respuesta genérica si falla
+      }
+      break;
+      
+    case "continuar_agendamiento":
+      // Si hay un flujo de agendamiento en curso
+      if (this.appointmentState[userId]) {
+        console.log("📝 Continuando flujo de agendamiento existente");
+        try {
+          await this.handleAppointmentFlow(userId, message.text.body, messageId);
+          return;
+        } catch (appointmentError) {
+          console.error("❌ Error en flujo de agendamiento:", appointmentError);
+          // Continuar con respuesta genérica si falla
+        }
+      }
+      break;
+      
+    case "consultar_pedido":
+      // Si la IA determinó que el usuario quiere consultar un pedido
+      console.log("🔍 Consultando estado de pedido según análisis contextual");
+      try {
+        await this.handleOrderStatusQuery(userId, message.text.body, messageId);
+        return;
+      } catch (orderQueryError) {
+        console.error("❌ Error al consultar pedido:", orderQueryError);
+        // Continuar con respuesta genérica si falla
+      }
+      break;
+      
+    case "responder_saludo":
+      // Si es un saludo simple
+      console.log("👋 Respondiendo a saludo según análisis contextual");
+      try {
+        await this.sendWelcomeMessage(userId, messageId, senderInfo);
+        return;
+      } catch (welcomeError) {
+        console.error("❌ Error al enviar bienvenida:", welcomeError);
+        // Continuar con respuesta genérica si falla
+      }
+      break;
+      
+    // Otros casos específicos que puedes agregar...
+      
+    case "responder_consulta":
+    default:
+      // Respuesta general usando IA
+      console.log("💬 Generando respuesta contextual general");
+      
+      // Determinar el tipo de respuesta basado en el análisis
+      let promptType = 'general';
+      let promptSpecific;
+      
+      // Configurar prompt según el contexto
+      if (contextAnalysis.messageType === 'pregunta') {
+        promptType = 'consulta';
+        promptSpecific = `
+          El usuario está haciendo una consulta sobre: "${message.text.body}".
+          Su etapa de compra es: ${contextAnalysis.purchaseStage}.
+          Los temas mencionados son: ${contextAnalysis.topics.join(', ')}.
+          
+          ${contextAnalysis.nextActionSuggestion ? 
+            `Después de tu respuesta principal, incluye en el mismo mensaje una breve sugerencia
+            relacionada con los temas mencionados.` : 
+            `Genera una respuesta clara y directa, sin sugerencias adicionales.`}
+        `;
+      } else if (contextAnalysis.suggestedFlow === 'ventas') {
+        promptType = 'venta';
+        promptSpecific = `
+          El usuario está en un flujo de ventas y dice: "${message.text.body}". 
+          Su etapa de compra es: ${contextAnalysis.purchaseStage}. 
+          ${contextAnalysis.nextActionSuggestion ? 
+            `Después de tu respuesta principal, incluye una breve sugerencia
+            de siguiente paso (ver catálogo, elegir producto, agendar entrega, etc.).` : 
+            `Genera una respuesta que impulse la venta.`}
+        `;
+      } else {
+        // Para casos generales
+        promptSpecific = `
+          El usuario dice: "${message.text.body}". Genera una respuesta útil según el contexto.
+          ${contextAnalysis.nextActionSuggestion ? 
+            `Al final, incluye una breve sugerencia de siguiente paso relacionada con la tienda.` : 
+            ``}
+        `;
+      }
+      
+      try {
+        // Generar respuesta con IA
+        let response = await this.generateContextualResponse(userId, promptType, promptSpecific);
+        
+        // Humanizar respuesta
+        const userData = this.userProfiles.getPersonalizationData(userId);
+        response = HumanLikeUtils.addResponseVariability(response);
+        
+        // Añadir errores humanos ocasionalmente (solo 10% del tiempo)
+        if (Math.random() > 0.9) {
+          response = HumanLikeUtils.addHumanLikeErrors(response);
+        }
+        
+        // Añadir retraso humanizado
+        await HumanLikeUtils.simulateTypingIndicator(response.length);
+        
+        // Enviar respuesta
+        await whatsappService.sendMessage(userId, response, messageId);
+        this.updateConversationHistory(userId, 'assistant', response);
+      } catch (responseError) {
+        console.error("❌ Error al generar respuesta:", responseError);
+        
+        // Respuesta de fallback
+        const fallbackMsg = "Lo siento, no pude procesar tu mensaje correctamente. ¿Podrías intentar explicarlo de otra forma?";
+        await whatsappService.sendMessage(userId, fallbackMsg, messageId);
+        this.updateConversationHistory(userId, 'assistant', fallbackMsg);
+      }
+      break;
+  }
+  
+  // Asegurarse de finalizar el procesamiento del mensaje
+  this.finishMessageProcessing(userId, messageId);
+}
+
+  // CORREGIDO: Método mejorado para verificar si un mensaje está siendo procesado
+isMessageBeingProcessed(userId, messageId) {
+  const now = Date.now();
+  
+  // Limpiar entradas expiradas
+  for (const [key, data] of this.processingMessages.entries()) {
+    if (now - data.timestamp > this.MAX_PROCESSING_TIME) {
+      this.processingMessages.delete(key);
+    }
+  }
+  
+  // Verificar si este mensaje específico ya está siendo procesado
+  const messageKey = `${userId}_${messageId}`;
+  if (this.processingMessages.has(messageKey)) {
+    console.log(`🔄 Mensaje específico ${messageId} ya está siendo procesado`);
+    return {
+      isProcessing: true,
+      isSelf: true,
+      data: this.processingMessages.get(messageKey)
+    };
+  }
+  
+  // Verificar si hay otros mensajes activos para este usuario
+  // y si el último mensaje se envió hace menos de 5 segundos
+  const userMessages = Array.from(this.processingMessages.values())
+    .filter(data => data.userId === userId && (now - data.timestamp) < 5000);
+  
+  if (userMessages.length > 0) {
+    console.log(`⚠️ Usuario ${userId} ya tiene ${userMessages.length} mensaje(s) reciente(s) en procesamiento`);
+    
+    // Registrar que este mensaje está relacionado con un procesamiento activo
+    this.processingMessages.set(messageKey, {
+      userId,
+      messageId,
+      timestamp: now,
+      isRelated: true,
+      relatedTo: userMessages[0].messageId
+    });
+    
+    return {
+      isProcessing: true,
+      isSelf: false,
+      isRelated: true,
+      data: userMessages[0]
+    };
+  }
+  
+  // No hay mensajes en procesamiento, registrar este como nuevo
+  this.processingMessages.set(messageKey, {
+    userId,
+    messageId,
+    timestamp: now,
+    isRelated: false
+  });
+  
+  return {
+    isProcessing: false
+  };
+}
+
+  // CORREGIDO: Método mejorado para marcar cuando finaliza el procesamiento
+  finishMessageProcessing(userId, messageId) {
+    // Eliminar este mensaje específico
+    const processingKey = `${userId}_${messageId}`;
+    this.processingMessages.delete(processingKey);
+    
+    // Eliminar también mensajes relacionados para este usuario
+    const keysToDelete = [];
+    
+    for (const [key, data] of this.processingMessages.entries()) {
+      if (data.userId === userId && 
+         (data.relatedTo === messageId || Date.now() - data.timestamp > 10000)) {
+        keysToDelete.push(key);
+      }
+    }
+    
+    // Eliminar fuera del bucle para evitar modificar durante la iteración
+    keysToDelete.forEach(key => {
+      this.processingMessages.delete(key);
+    });
+    
+    if (keysToDelete.length > 0) {
+      console.log(`✅ Procesamiento finalizado para ${userId}. Eliminados ${keysToDelete.length + 1} registros.`);
+    }
+  }
+
+  // CORREGIDO: Método para verificar si un mensaje es válido y debe ser procesado
   isValidIncomingMessage(message) {
     // 1. Verificar que el mensaje tenga la estructura básica necesaria
     if (!message || !message.id || !message.from || !message.type || message.type !== 'text') {
@@ -1203,7 +1572,7 @@ class MessageHandler {
     const now = Date.now();
     const messageTimestamp = message.timestamp || now; // Si no hay timestamp, usar ahora
     const tooOld = now - messageTimestamp > 60000 * 10; // 10 minutos
-    const tooFuture = messageTimestamp - now > 10000; // 10 segundos en el futuro (por diferencias de reloj)
+    const tooFuture = messageTimestamp - now > 10000; // 10
     
     if (tooOld) {
       console.log(`⏰ Mensaje demasiado antiguo [ID: ${message.id}], ignorando`);
@@ -1252,6 +1621,29 @@ class MessageHandler {
     }
   }
 
+  // NUEVO: Método mejorado para actualizar estado del buffer
+  updateBufferState(userId, message) {
+    // Vaciar el buffer para este usuario si hay un mensaje en proceso
+    const lastProcessedTime = this.lastProcessedTimestamp.get(userId) || 0;
+    const now = Date.now();
+    
+    if (now - lastProcessedTime < this.COOLDOWN_TIME) {
+      // Hay un mensaje reciente, forzar limpieza del buffer
+      if (this.messageBuffer.buffers[userId]) {
+        console.log(`🧹 Limpiando buffer de ${userId} para prevenir respuestas duplicadas`);
+        this.messageBuffer.buffers[userId] = {
+          messages: [],
+          messageObjects: [],
+          lastTimestamp: now,
+          currentState: this.messageBuffer.buffers[userId].currentState,
+          originalMessageId: null
+        };
+      }
+    }
+    
+    // Método existente...
+  }
+
   // Método para actualizar historial de conversaciones
   updateConversationHistory(userId, role, message) {
     if (!this.conversationHistory[userId]) {
@@ -1274,470 +1666,391 @@ class MessageHandler {
 
     this.conversationHistory[userId].push({
       role: role, // 'user' o 'assistant'
-      content: message
+      content: message,
+      timestamp: Date.now()
     });
     
     console.log(`📝 Historial actualizado para ${userId}. Mensajes: ${this.conversationHistory[userId].length}`);
   }
 
-  // MÉTODO PRINCIPAL PARA MANEJAR MENSAJES ENTRANTES
-  // MÉTODO PRINCIPAL PARA MANEJAR MENSAJES ENTRANTES
-  async handleIncomingMessage(message, senderInfo) {
-    try {
-      // Validación completa del mensaje
-      if (!this.isValidIncomingMessage(message)) {
-        return; // El método isValidIncomingMessage ya registra el motivo del rechazo
-      }
-      
-      // Marcar mensaje como procesado
-      this.markMessageAsProcessed(message.id);
-      
-      // AÑADIR: Un control para evitar procesar mensajes que son parte de una secuencia
-      const isPartOfSequence = message._isPartOfSequence || false;
-      
-      // NUEVO: Verificar si hay conversación activa en curso
-      const hasActiveFlow = this.appointmentState[message.from] || 
-                            (this.assistantState[message.from] && 
-                             this.assistantState[message.from].expectingResponse);
-      
-      // NUEVO: Determinar el contexto actual más específico
-      let currentState = 'unknown';
-      let lastQuestion = null;
-      
-      if (this.appointmentState[message.from]) {
-        currentState = this.appointmentState[message.from].step;
-        lastQuestion = this.appointmentState[message.from].lastQuestion || null;
-      } else if (this.assistantState[message.from]) {
-        currentState = this.assistantState[message.from].step;
-        lastQuestion = this.assistantState[message.from].lastQuestion || null;
-      }
-      
-      // NUEVO: Actualizar el estado en el buffer con más contexto
-      // Añadir manejo de errores para la actualización de estado
-      try {
-        this.messageBuffer.updateState(message.from, {
-          step: currentState,
-          lastQuestion: lastQuestion,
-          hasActiveFlow: hasActiveFlow
-        });
-      } catch (stateError) {
-        console.log(`⚠️ Error al actualizar estado en buffer: ${stateError.message}`);
-        // No interrumpir el flujo por un error en la actualización del estado
-      }
-      
-      // NUEVO: Restaurar el ID de mensaje original para mantener el contexto
-      let contextMessageId = message.id;
-      if (this.conversationHistory[message.from] && 
-          this.conversationHistory[message.from].length > 0) {
-        
-        const lastAssistantMessage = this.conversationHistory[message.from]
-          .filter(msg => msg.role === 'assistant')
-          .pop();
-        
-        if (lastAssistantMessage && lastAssistantMessage.messageId) {
-          // Usar el último ID de mensaje del asistente para mantener el hilo
-          contextMessageId = lastAssistantMessage.messageId;
-        }
-      }
-      
-      // Agregar mensaje al buffer con tiempo de espera adaptativo y manejo de errores
-      const bufferWaitTime = hasActiveFlow ? 15000 : 10000; // Aumentado a 10 segundos para mensajes normales
-      
-      let shouldProcessNow = false;
-      try {
-        shouldProcessNow = this.messageBuffer.addMessage(
-          message.from, 
-          message, 
-          (combinedMessage) => {
-            // Este callback se ejecutará cuando se complete el tiempo de espera
-            if (combinedMessage) {
-              console.log(`📦 Procesando mensaje combinado [${combinedMessage._originalCount} mensajes]: "${combinedMessage.text.body}"`);
-              
-              // NUEVO: Marcar todos los mensajes originales como parte de una secuencia
-              if (combinedMessage._originalMessages && combinedMessage._originalMessages.length > 1) {
-                combinedMessage._originalMessages.forEach(msg => {
-                  if (msg.id !== combinedMessage.id) {
-                    msg._isPartOfSequence = true;
-                  }
-                });
-              }
-              
-              // NUEVO: Marcar cuál es el mensaje más reciente para evitar respuestas duplicadas
-              combinedMessage._isRecentMessage = true;
-              
-              // Asegurarse de preservar el contexto
-              combinedMessage.contextMessageId = contextMessageId;
-              this.processMessage(combinedMessage, senderInfo);
-            }
-          },
-          bufferWaitTime  // Pasar el tiempo de espera adaptativo
-        );
-      } catch (bufferError) {
-        console.error(`❌ Error al agregar mensaje al buffer: ${bufferError.message}`);
-        shouldProcessNow = true; // Procesar inmediatamente en caso de error
-      }
-      
-      // Si debe procesarse ahora, hacerlo inmediatamente
-      if (shouldProcessNow) {
-        let combinedMessage = null;
-        try {
-          combinedMessage = this.messageBuffer.getCombinedMessage(message.from);
-        } catch (combineError) {
-          console.error(`❌ Error al combinar mensaje: ${combineError.message}`);
-          // Si falla la combinación, usar el mensaje original
-          combinedMessage = {
-            ...message,
-            _isRecentMessage: true,
-            _originalCount: 1
-          };
-        }
-        
-        if (combinedMessage) {
-          console.log(`📦 Procesando mensaje inmediatamente [${combinedMessage._originalCount || 1} mensajes]: "${combinedMessage.text.body}"`);
-          
-          // NUEVO: Marcar todos los mensajes originales como parte de una secuencia
-          if (combinedMessage._originalMessages && combinedMessage._originalMessages.length > 1) {
-            combinedMessage._originalMessages.forEach(msg => {
-              if (msg.id !== combinedMessage.id) {
-                msg._isPartOfSequence = true;
-              }
-            });
-          }
-          
-          // NUEVO: Marcar cuál es el mensaje más reciente para evitar respuestas duplicadas
-          combinedMessage._isRecentMessage = true;
-          
-          // Asegurarse de preservar el contexto
-          combinedMessage.contextMessageId = contextMessageId;
-          await this.processMessage(combinedMessage, senderInfo);
-        }
-      } else if (!isPartOfSequence) {
-        // MODIFICADO: Solo registrar el mensaje en buffer si no es parte de una secuencia ya procesada
-        console.log(`⏳ Mensaje añadido al buffer para posible combinación: "${message.text.body}"`);
-        
-        // Indicador de "escribiendo" solo para secuencias nuevas
-        // Simulación de escritura para secuencias nuevas (70% del tiempo)
-        if (hasActiveFlow && Math.random() > 0.3) {
-          try {
-            // Simular brevemente que está escribiendo (mensaje más corto por ser respuesta rápida)
-            const simulatedLength = Math.min(30, message.text.body.length);
-            await HumanLikeUtils.simulateTypingIndicator(
-              message.from,
-              simulatedLength,
-              message.id,
-              'normal' // Complejidad normal para respuestas rápidas
-            );
-            console.log(`💬 Simulación de escritura activada para: ${message.from}`);
-          } catch (typingError) {
-            console.log(`⚠️ No se pudo simular escritura: ${typingError.message}`);
-          }
-        }
-      } else {
-        console.log(`🔄 Mensaje identificado como parte de secuencia, no requiere respuesta independiente: "${message.text.body}"`);
-      }
-      
-      // Limpiar periódicamente buffers antiguos
-      if (Math.random() < 0.1) { // 10% de probabilidad para no hacerlo en cada mensaje
-        try {
-          this.messageBuffer.cleanup();
-        } catch (cleanupError) {
-          console.log(`⚠️ Error en limpieza de buffers: ${cleanupError.message}`);
-        }
-      }
-      
-    } catch (globalError) {
-      console.error("🔥 ERROR GLOBAL en handleIncomingMessage:", globalError);
-      try {
-        // Mensaje de error más amigable usando la utilidad de humanización
-        const errorMessage = HumanLikeUtils.generateHumanResponse(
-          'Lo siento, estamos experimentando un problema técnico. ¿Puedes intentar de nuevo en unos minutos?'
-        );
-        
-        await whatsappService.sendMessage(
-          message.from, 
-          errorMessage, 
-          message.id
-        );
-        await whatsappService.markAsRead(message.id);
-      } catch (finalError) {
-        console.error("💀 Error fatal:", finalError);
-      }
+  // MÉTODO PRINCIPAL PARA ANÁLISIS DE CONTEXTO DE LA CONVERSACIÓN CON IA
+async analyzeConversationContext(userId, currentMessage) {
+  try {
+
+    // NUEVO: Detectar saludos primero para evitar análisis innecesario
+    if (this.isSimpleGreeting(currentMessage)) {
+      console.log("👋 Detectado saludo en análisis de contexto, saltando análisis completo");
+      return {
+        messageType: "saludo",
+        topics: [],
+        purchaseStage: "exploracion",
+        suggestedFlow: "none",
+        nextActionSuggestion: false,
+        specificAction: "responder_saludo"
+      };
     }
+
+    // Construir contexto de conversación limitado (evitar repeticiones)
+    let historyContext = this.conversationHistory[userId] || [];
+    if (historyContext.length > 6) {
+      historyContext = historyContext.slice(-6); // Usar los últimos 6 mensajes
+    }
+    
+    // Construir prompt para análisis de contexto
+    const analysisPrompt = {
+      task: 'analisis_contexto',
+      systemPrompt: `
+        Eres un asistente de WhatsApp para una tienda de rosas preservadas que analiza conversaciones.
+        Analiza el historial de conversación y el mensaje actual del usuario.
+        Determina lo siguiente:
+        1. Tipo de mensaje (pregunta, afirmación, solicitud, etc.)
+        2. Temas principales mencionados (rosas, precios, entrega, etc.)
+        3. Etapa de compra (exploración, consulta, decisión, agendamiento, pago)
+        4. Flujo sugerido a seguir (ventas, consulta, agendamiento, pago)
+        5. Si se debe sugerir un siguiente paso
+        6. ACCIÓN ESPECÍFICA a tomar (enviar_catalogo, responder_consulta, iniciar_agendamiento, etc.)
+        
+        IMPORTANTE: EVALÚA SI EL USUARIO ESTÁ SOLICITANDO O HA ACEPTADO VER EL CATÁLOGO
+        
+        Responde con un objeto JSON sin formato de código.
+        NO uses bloques de código markdown (\`\`\`json) al principio ni al final.
+        El formato debe ser exactamente:
+        {"messageType":"valor","topics":["valor1","valor2"],"purchaseStage":"valor","suggestedFlow":"valor","nextActionSuggestion":true/false,"specificAction":"valor"}
+      `,
+      conversation: historyContext,
+      currentMessage: currentMessage,
+      knowledgeBase: {
+        productos: Object.keys(this.productKnowledge.productos),
+        agendamiento: true,
+        procesosCompra: true
+      }
+    };
+
+    // Enviar a la IA para análisis contextual
+    let analysisResult = await OpenAiService(analysisPrompt);
+
+    // Limpiar posibles bloques de código markdown o texto adicional
+    analysisResult = analysisResult.replace(/```json|```/g, '').trim();
+
+    // Si empieza con comentarios o caracteres no JSON, intentar encontrar el inicio del JSON
+    const jsonStart = analysisResult.indexOf('{');
+    const jsonEnd = analysisResult.lastIndexOf('}');
+    
+    if (jsonStart >= 0 && jsonEnd >= 0) {
+      analysisResult = analysisResult.substring(jsonStart, jsonEnd + 1);
+    }
+
+    // Parsearlo como JSON y devolverlo
+    try {
+      const parsedResult = JSON.parse(analysisResult);
+      console.log("✅ Análisis de contexto completado:", parsedResult);
+      return parsedResult;
+    } catch (parseError) {
+      console.error("Error al parsear resultado de análisis:", parseError);
+      console.log("Texto que intentó parsear:", analysisResult);
+      
+      // Valor por defecto en caso de error
+      return {
+        messageType: "desconocido",
+        topics: [],
+        purchaseStage: "exploracion",
+        suggestedFlow: "none",
+        nextActionSuggestion: false,
+        specificAction: "responder_consulta"
+      };
+    }
+  } catch (error) {
+    console.error("Error en análisis de contexto:", error);
+    
+    // Valor por defecto en caso de error
+    return {
+      messageType: "desconocido",
+      topics: [],
+      purchaseStage: "exploracion",
+      suggestedFlow: "none",
+      nextActionSuggestion: false,
+      specificAction: "responder_consulta"
+    };
   }
-  
-  // NUEVO: Método para procesar el mensaje una vez combinado
-  // MÉTODO PRINCIPAL PARA PROCESAR MENSAJES
-  async processMessage(message, senderInfo) {
-    try {
-      // NUEVO: Verificar si es un mensaje combinado y evitar respuesta repetida
-      if (message._originalCount > 1) {
-        console.log(`📊 Detectado mensaje combinado (${message._originalCount} mensajes), procesando como conversación completa`);
-      }
+}
+
+  // CORREGIDO: Versión mejorada del flujo asistente con IA para evitar respuestas duplicadas
+  // CORREGIDO: Versión mejorada del flujo asistente con IA para evitar respuestas duplicadas
+async handleAssistantFlowWithAI(to, message, messageId, contextAnalysis, isCombinedMessage = false) {
+  try {
+    // MODIFICACIÓN: Eliminamos la verificación de duplicados aquí
+    // ya que se maneja en processMessage y pasamos isCombinedMessage como parámetro
     
-      // NUEVO: Si se está respondiendo a un mensaje previo como parte de una secuencia, saltarlo
-      if (!message._isRecentMessage && message._isPartOfSequence) {
-        console.log("🔄 Omitiendo respuesta a mensaje dentro de secuencia ya procesada");
-        await whatsappService.markAsRead(message.id);
-        return;
-      }
-      
-      // Verificar procesamiento de mensajes con manejo de errores
-      let processingCheck = false;
-      try {
-        processingCheck = this.isMessageBeingProcessed(message.from, message.id);
-      } catch (processingError) {
-        console.log(`⚠️ Error al verificar procesamiento: ${processingError.message}`);
-        // Continuar con processingCheck = false
-      }
-      
-      if (processingCheck) {
-        console.log(`🔀 Este mensaje está relacionado con otro en procesamiento. Ajustando flujo.`);
-        
-        const userProcessingMessages = Array.from(this.processingMessages.values())
-    .filter(data => data.userId === message.from);
-  
-  // Calcular tiempo desde primera y última respuesta del asistente
-  const recentResponses = this.conversationHistory[message.from]
-    ?.filter(msg => msg.role === 'assistant')
-    ?.slice(-2);
-  
-  const lastResponseTime = recentResponses && recentResponses.length > 0 
-    ? Date.now() - (recentResponses[recentResponses.length - 1].timestamp || 0) 
-    : 60000;
-  
-  // IMPORTANTE: Bloquear totalmente el procesamiento de mensajes relacionados
-  // si hay otros mensajes en procesamiento o respuestas recientes (< 15 seg)
-  if (userProcessingMessages.length > 0 || lastResponseTime < 15000) {
-    console.log(`⏱️ Bloqueando respuesta para mensaje relacionado: ${userProcessingMessages.length} mensajes en procesamiento, ${Math.round(lastResponseTime/1000)}s desde última respuesta`);
-    
-    // Solo registrar mensaje en historial pero NO generar respuesta
-    this.updateConversationHistory(message.from, 'user', message.text.body.trim());
-    
-    try {
-      // Marcar como leído sin que falle todo el proceso
-      const readResult = await whatsappService.markAsRead(message.id);
-      if (!readResult.success) {
-        console.log("⚠️ No se pudo marcar como leído pero continuando el flujo");
-      }
-    } catch (markReadError) {
-      console.error("❌ Error al marcar como leído:", markReadError.message);
+    // Inicializar estado si no existe
+    if (!this.assistantState[to]) {
+      this.assistantState[to] = { step: 'general_inquiry' };
     }
     
-    // Acumular contexto para el mensaje principal
-    try {
-      // Identificar el mensaje principal al que está relacionado este
-      const relatedMessages = userProcessingMessages.filter(data => !data.isRelated);
+    const state = this.assistantState[to];
+    
+    // Incrementar el contador
+    if (!this.interactionCounter[to]) {
+      this.interactionCounter[to] = 1;
+    } else {
+      this.interactionCounter[to]++;
+    }
+    
+    // Configurar tipo de respuesta basado en análisis
+    const isQuery = contextAnalysis.messageType === 'pregunta' || 
+                  contextAnalysis.messageType === 'consulta' ||
+                  this.isQueryMessage(message.toLowerCase());
+    
+    let promptType = 'general';
+    let promptSpecific;
+
+    // Verificar si debemos incluir sugerencia
+    const includeSuggestion = contextAnalysis.nextActionSuggestion && 
+                             (this.interactionCounter[to] % 3 === 0); // Sugerir cada 3 interacciones
+
+    // Configurar prompt específico basado en tipo de mensaje
+    if (isQuery) {
+      promptType = 'consulta_con_sugerencia';
       
-      if (relatedMessages.length > 0) {
-        const mainMessageId = relatedMessages[0].messageId;
-        console.log(`✅ Acumulando contexto para mensaje principal: ${mainMessageId}`);
+      promptSpecific = `
+        El usuario está haciendo una consulta sobre: "${message}".
+        Su etapa de compra es: ${contextAnalysis.purchaseStage}.
+        Los temas mencionados son: ${contextAnalysis.topics.join(', ')}.
         
-        // Guardar referencia al texto para incluirlo en el análisis
-        if (!this.accumulatedContext) {
-          this.accumulatedContext = new Map();
-        }
-        
-        const existingContext = this.accumulatedContext.get(message.from) || {
-          mainMessageId: mainMessageId,
-          texts: []
-        };
-        
-        existingContext.texts.push(message.text.body.trim());
-        this.accumulatedContext.set(message.from, existingContext);
-        console.log(`📝 Contexto acumulado: ${existingContext.texts.length} mensajes`);
+        ${includeSuggestion ? 
+          `Después de tu respuesta principal, incluye en el mismo mensaje una breve sugerencia
+          relacionada con los temas mencionados.` : 
+          `Genera una respuesta clara y directa, sin sugerencias adicionales.`}
+      `;
+    }
+    else if (state.step === 'sales_interaction') {
+      promptType = 'venta';
+      
+      promptSpecific = `
+        El usuario está en un flujo de ventas y dice: "${message}". 
+        Su etapa de compra es: ${contextAnalysis.purchaseStage}. 
+        ${includeSuggestion ? 
+          `Después de tu respuesta principal, incluye en el mismo mensaje una breve sugerencia
+          de siguiente paso (ver catálogo, elegir producto, agendar entrega, etc.).` : 
+          `Genera una respuesta que impulse la venta.`}
+      `;
+    } 
+    else if (state.step === 'support_interaction') {
+      promptType = 'soporte';
+      
+      promptSpecific = `
+        El usuario necesita soporte y dice: "${message}". 
+        ${includeSuggestion ? 
+          `Al final, incluye una breve sugerencia de siguiente paso.` : 
+          `Genera una respuesta de asistencia útil.`}
+      `;
+    }
+    else {
+      promptSpecific = `
+        El usuario dice: "${message}". Genera una respuesta útil según el contexto.
+        ${includeSuggestion ? 
+          `Al final, incluye una breve sugerencia de siguiente paso relacionada con la tienda.` : 
+          ``}
+      `;
+    }
+
+    console.log(`✅ Generando respuesta tipo ${promptType} (incluye sugerencia: ${includeSuggestion ? 'sí' : 'no'})`);
+    
+    // Generar respuesta con IA
+    let response = await this.generateContextualResponse(to, promptType, promptSpecific);
+    
+    // Humanizar respuesta
+    response = HumanLikeUtils.addResponseVariability(response);
+    
+    // Añadir errores humanos ocasionalmente (solo 10% del tiempo)
+    if (Math.random() > 0.9) {
+      response = HumanLikeUtils.addHumanLikeErrors(response);
+    }
+    
+    // Añadir retraso humanizado (usando la versión corregida, solo con setTimeout)
+    await HumanLikeUtils.simulateTypingIndicator(response.length);
+    
+    // Actualizar estado según análisis de IA
+    if (contextAnalysis.suggestedFlow === 'agendamiento' && 
+        (this.isPositiveResponse(message) || message.toLowerCase().includes('agendar'))) {
+      // Iniciar flujo de agendamiento
+      this.appointmentState[to] = { step: 'name' };
+      delete this.assistantState[to]; // Limpiar estado del asistente
+      
+      const agendaMsg = await this.generateContextualResponse(
+        to,
+        'iniciar_agendamiento',
+        'El usuario quiere agendar. Genera una respuesta para iniciar el proceso pidiendo su nombre'
+      );
+      
+      await whatsappService.sendMessage(to, agendaMsg, messageId);
+      this.updateConversationHistory(to, 'assistant', agendaMsg);
+      
+      // Marcar como finalizado después de enviar
+      this.finishMessageProcessing(to, messageId);
+      return;
+    }
+    
+    // Enviar la respuesta al usuario
+    await whatsappService.sendMessage(to, response, messageId);
+    this.updateConversationHistory(to, 'assistant', response);
+    
+    // Actualizar el estado según el análisis
+    if (contextAnalysis.messageType === 'pregunta') {
+      state.intent = 'query';
+    } else if (contextAnalysis.suggestedFlow !== 'none') {
+      state.step = `${contextAnalysis.suggestedFlow}_interaction`;
+    }
+    
+    console.log("✅ Respuesta IA de flujo asistente enviada");
+    
+    // Marcar como finalizado
+    this.finishMessageProcessing(to, messageId);
+
+  } catch (error) {
+    console.error("❌ Error en flujo asistente IA:", error);
+    
+    try {
+      await whatsappService.sendMessage(to, 'Ocurrió un error. Por favor, intenta de nuevo.', messageId);
+      this.updateConversationHistory(to, 'assistant', 'Ocurrió un error. Por favor, intenta de nuevo.');
+    } catch (msgError) {
+      console.error("💀 Error al enviar mensaje de error:", msgError);
+    }
+    
+    // Asegurarse de limpiar el estado incluso en caso de error
+    this.finishMessageProcessing(to, messageId);
+  }
+}
+
+  // CORREGIDO: Método para enviar bienvenida sin usar simulación de escritura de la API
+  async sendWelcomeMessage(to, messageId, senderInfo) {
+    try {
+      console.log(`👋 Enviando mensaje de bienvenida a ${to}`);
+      
+      // Marcar como leído de forma segura
+      try {
+        await whatsappService.markAsRead(messageId);
+      } catch (readError) {
+        console.log("⚠️ No se pudo marcar como leído pero continuando");
       }
       
-      // Marcar explícitamente que este mensaje ha sido procesado
-      this.finishMessageProcessing(message.from, message.id);
+      // Obtener nombre del usuario si está disponible
+      const userName = senderInfo?.profile?.name || '';
+      const greeting = userName ? `¡Hola ${userName}!` : "¡Hola!";
+      
+      // Mensaje de bienvenida simple pero efectivo
+      const welcomeMessages = [
+        `${greeting} Soy el asistente virtual de Dommo. Tenemos hermosas rosas preservadas que duran hasta 4 años. ¿En qué puedo ayudarte hoy? 🌹`,
+        `${greeting} Bienvenido a Dommo, donde encontrarás rosas preservadas únicas. ¿Te gustaría ver nuestro catálogo? 🌹`,
+        `${greeting} Gracias por contactar a Dommo. Ofrecemos rosas preservadas en diferentes tamaños y colores. ¿Qué te gustaría saber? 🌹`
+      ];
+      
+      // Seleccionar un mensaje aleatorio para dar variedad
+      const welcomeMessage = welcomeMessages[Math.floor(Math.random() * welcomeMessages.length)];
+      
+      // Añadir retraso humanizado antes de responder 
+      // Usando simulateTypingIndicator de HumanLikeUtils en lugar de la API
+      await HumanLikeUtils.simulateTypingIndicator(welcomeMessage.length);
+      
+      // Enviar mensaje
+      await whatsappService.sendMessage(to, welcomeMessage, messageId);
+      
+      // Actualizar historial
+      this.updateConversationHistory(to, 'assistant', welcomeMessage);
+      
+      // Actualizar estado del asistente
+      this.assistantState[to] = { 
+        step: 'welcome_sent',
+        intent: 'greeting'
+      };
+      
+      console.log("✅ Mensaje de bienvenida enviado correctamente");
+      return true;
     } catch (error) {
-      console.error("Error al actualizar contexto acumulado:", error);
+      console.error("❌ Error al enviar mensaje de bienvenida:", error);
+      
+      // Intentar con un mensaje ultrasimple como fallback
+      try {
+        const fallbackMsg = "¡Hola! Bienvenido a Dommo. ¿En qué puedo ayudarte?";
+        await whatsappService.sendMessage(to, fallbackMsg, messageId);
+        this.updateConversationHistory(to, 'assistant', fallbackMsg);
+      } catch (fallbackError) {
+        console.error("💀 Error fatal:", fallbackError);
+      }
+      
+      return false;
     }
-    
-    return;
   }
-}
-  
-      const incomingMessage = message.text.body.trim();
-      const incomingMessageLower = incomingMessage.toLowerCase();
-      
-      // Log de recepción del mensaje
-      console.log(`🔄 MENSAJE PROCESADO [${new Date().toISOString()}]: "${incomingMessage}"`);
-      console.log(`De: ${message.from}, ID: ${message.id}`);
-      
-      // Actualizar historial de conversación - PUNTO DE POSIBLE FALLA #1
-      try {
-        this.updateConversationHistory(message.from, 'user', incomingMessage);
-        console.log("✅ Historial de conversación actualizado");
-      } catch (historyError) {
-        console.error("❌ Error al actualizar historial:", historyError);
-        // Continuar con el procesamiento a pesar del error
-      }
-      
-      // Marcar mensaje como leído - PUNTO DE POSIBLE FALLA #2
-      try {
-        const readResult = await whatsappService.markAsRead(message.id);
-        if (readResult.success) {
-          console.log("✅ Mensaje marcado como leído");
-        } else {
-          // El error ya ha sido registrado en el servicio, no interrumpir el flujo
-          console.log("⚠️ No se pudo marcar como leído pero continuando el flujo");
-        }
-      } catch (markReadError) {
-        // Captura extra por si acaso, pero no debería ocurrir con el nuevo servicio
-        console.error("❌ Error al marcar mensaje como leído:", markReadError.message);
-        // Continuar con el procesamiento a pesar del error
-      }
-      
-      // NUEVO: Si es un saludo simple, enviar respuesta de bienvenida directa sin análisis
-      if (this.isGreeting(incomingMessageLower) && incomingMessage.length < 10) {
-        console.log("🙋 Detectado saludo simple, enviando bienvenida...");
-        
-        try {
-          await this.sendWelcomeMessage(message.from, message.id, senderInfo);
-          console.log("✅ Respuesta de bienvenida enviada correctamente");
-          
-          // Finalizar procesamiento
-          this.finishMessageProcessing(message.from, message.id);
-          return;
-        } catch (greetingError) {
-          console.error("❌ Error al enviar saludo:", greetingError);
-          // Continuar con el procesamiento normal como fallback
-        }
-      }
-      
-      // Analizar contexto de la conversación - PUNTO DE POSIBLE FALLA #3
-      console.log("🔍 Analizando contexto de la conversación...");
 
-      let contextToAnalyze = incomingMessage;
-
-if (this.accumulatedContext && this.accumulatedContext.has(message.from)) {
-  const accumulatedData = this.accumulatedContext.get(message.from);
-  
-  // Solo usar el contexto acumulado si este mensaje es el principal
-  if (accumulatedData.mainMessageId === message.id) {
-    // Combinar todos los mensajes para un análisis más completo
-    const allTexts = [incomingMessage, ...accumulatedData.texts];
-    contextToAnalyze = allTexts.join(' ');
-    
-    console.log(`🔄 Usando contexto acumulado para análisis: ${allTexts.length} mensajes combinados`);
-    
-    // Limpiar después de usar
-    this.accumulatedContext.delete(message.from);
+  // Funciones de detección mejoradas
+  isGreeting(message) {
+    const messageLower = message.toLowerCase().trim();
+    const greetings = ['hey', 'hola', 'ola', 'buenos días', 'buenas tardes', 'buenas noches', 'saludos'];
+    return greetings.some(greeting => messageLower.includes(greeting)) && message.length < 15;
   }
-}
 
-      let contextAnalysis;
+  isQueryMessage(message) {
+    const messageLower = message.toLowerCase();
+    return message.includes('?') || ['qué', 'que', 'cómo', 'como', 'dónde', 'donde', 'cuándo', 'cuando'].some(word => 
+      messageLower.includes(word + ' ')
+    );
+  }
+
+  isPositiveResponse(message) {
+    const messageLower = message.toLowerCase();
+    return ['sí', 'si', 'claro', 'ok', 'está bien', 'perfecto'].some(word => messageLower.includes(word));
+  }
+
+  // Método para enviar catálogo
+  async sendMedia(to, messageId) {
+    try {
+      console.log(`📤 Enviando catálogo simple a ${to}`);
+      
+      const mediaUrl = 'https://s3.us-east-2.amazonaws.com/prueba.api.whatsapp/Copia+de+Catalogo+Dommo+%5BTama%C3%B1o+original%5D.pdf';
+      const caption = 'Catálogo Dommo';
+      const type = 'document';
+      
       try {
-        contextAnalysis = await this.analyzeConversationContext(message.from, contextToAnalyze);
-        console.log("✅ Análisis de contexto completado:", contextAnalysis);
-      } catch (analysisError) {
-        console.error("❌ Error en análisis de contexto:", analysisError);
-        // Si falla el análisis, usar un análisis básico para seguir operando
-        contextAnalysis = {
-          messageType: "desconocido",
-          topics: [],
-          purchaseStage: "exploracion",
-          suggestedFlow: "none",
-          nextActionSuggestion: false
-        };
-      }
-      
-      // Si el usuario está pidiendo el catálogo, enviarlo - PUNTO DE POSIBLE FALLA #4
-      const catalogKeywords = ['catálogo', 'catalogo', 'productos', 'ver productos', 'tienes productos', 'quiero ver'];
-      if (catalogKeywords.some(keyword => incomingMessageLower.includes(keyword))) {
-        console.log("📚 Detectada solicitud de catálogo");
-        try {
-          await this.sendMedia(message.from, message.id);
-          console.log("✅ Catálogo enviado correctamente");
-          
-          // Finalizar procesamiento
-          this.finishMessageProcessing(message.from, message.id);
-          return;
-        } catch (catalogError) {
-          console.error("❌ Error al enviar catálogo:", catalogError);
-          // Continuar con el flujo normal si falla el envío del catálogo
-        }
-      }
-      
-      // Si es una consulta de estado de pedido, manejarla - PUNTO DE POSIBLE FALLA #5
-      if (EnhancedIntentDetector.isOrderStatusQuery(incomingMessage)) {
-        console.log("🔍 Detectada consulta de estado de pedido");
-        try {
-          await this.handleOrderStatusQuery(message.from, incomingMessage, message.id);
-          console.log("✅ Consulta de estado procesada correctamente");
-          
-          // Finalizar procesamiento
-          this.finishMessageProcessing(message.from, message.id);
-          return;
-        } catch (orderQueryError) {
-          console.error("❌ Error al manejar consulta de estado:", orderQueryError);
-          // Continuar con el flujo normal si falla la consulta de estado
-        }
-      }
-      
-      // Si hay un estado de agendamiento activo, manejarlo - PUNTO DE POSIBLE FALLA #6
-      if (this.appointmentState[message.from]) {
-        console.log("📅 Continuando flujo de agendamiento activo");
-        try {
-          await this.handleAppointmentFlow(message.from, incomingMessage, message.id);
-          console.log("✅ Flujo de agendamiento procesado correctamente");
-          
-          // Finalizar procesamiento
-          this.finishMessageProcessing(message.from, message.id);
-          return;
-        } catch (appointmentError) {
-          console.error("❌ Error en flujo de agendamiento:", appointmentError);
-          // Si falla el flujo de agendamiento, intentar con flujo asistente general
-        }
-      }
-      
-      // Respuesta general usando IA - PUNTO DE POSIBLE FALLA #7
-      console.log("🤖 Utilizando flujo de asistente IA para generar respuesta");
-      try {
-        await this.handleAssistantFlowWithAI(message.from, incomingMessage, message.id, contextAnalysis);
-        console.log("✅ Respuesta de asistente IA generada correctamente");
-      } catch (aiError) {
-        console.error("❌ Error en flujo de asistente IA:", aiError);
+        // Enviar documento directamente
+        await whatsappService.sendMediaMessage(to, type, mediaUrl, caption, messageId);
+        console.log("✅ Documento enviado correctamente");
         
-        // FALLBACK: Enviar respuesta genérica si todo lo demás falla
-        const fallbackResponse = "Lo siento, estoy teniendo problemas para procesar tu mensaje. ¿Podrías intentarlo de nuevo o formular tu pregunta de otra manera?";
-        try {
-          await whatsappService.sendMessage(message.from, fallbackResponse, message.id);
-          console.log("✅ Respuesta de fallback enviada correctamente");
-          this.updateConversationHistory(message.from, 'assistant', fallbackResponse);
-        } catch (fallbackError) {
-          console.error("💥 ERROR FATAL: Incluso el fallback falló:", fallbackError);
-        }
+        // Establecer estado básico
+        this.assistantState[to] = { step: 'sales_interaction' };
+        
+        // Añadir retraso humanizado
+        await HumanLikeUtils.simulateTypingIndicator(150);
+        
+        // Enviar mensaje de seguimiento simple
+        const followupMsg = "Aquí tienes nuestro catálogo. ¿Hay algún producto que te llame la atención?";
+        await whatsappService.sendMessage(to, followupMsg, messageId);
+        this.updateConversationHistory(to, 'assistant', followupMsg);
+        
+        return true;
+      } catch (mediaError) {
+        console.error("❌ Error al enviar documento:", mediaError);
+        
+        // Alternativa: enviar como texto con enlace
+        const catalogoMsg = `¡Claro! Te comparto el enlace a nuestro catálogo: ${mediaUrl}`;
+        await whatsappService.sendMessage(to, catalogoMsg, messageId);
+        this.updateConversationHistory(to, 'assistant', catalogoMsg);
+        
+        return true;
       }
+    } catch (error) {
+      console.error("❌ Error general al enviar catálogo:", error);
       
-      // Finalizar procesamiento
-      try {
-        this.finishMessageProcessing(message.from, message.id);
-        console.log("✅ Procesamiento de mensaje finalizado correctamente");
-      } catch (cleanupError) {
-        console.log(`⚠️ Error en limpieza final: ${cleanupError.message}`);
-        // Error no crítico, se puede ignorar
-      }
+      // Mensaje de error básico
+      const errorMsg = "Lo siento, no pude enviarte el catálogo en este momento.";
+      await whatsappService.sendMessage(to, errorMsg, messageId);
+      this.updateConversationHistory(to, 'assistant', errorMsg);
       
-    } catch (globalError) {
-      console.error("❌ ERROR GLOBAL en processMessage:", globalError);
-      
-      // Intentar enviar una respuesta de error humanizada
-      try {
-        const errorMessage = "Parece que estamos experimentando algunos problemas técnicos. ¿Podrías intentarlo de nuevo en unos momentos?";
-        await whatsappService.sendMessage(message.from, errorMessage, message.id);
-        this.updateConversationHistory(message.from, 'assistant', errorMessage);
-      } catch (finalError) {
-        console.error("💀 Error fatal:", finalError);
-      }
-      
-      // Intentar limpiar el estado para evitar bloquear mensajes futuros
-      try {
-        this.finishMessageProcessing(message.from, message.id);
-      } catch (error) {
-        // Ignorar cualquier error en esta etapa final
-      }
+      return false;
     }
+  }
+
+  // Método para obtener nombre del remitente
+  getSenderName(senderInfo) {
+    return senderInfo?.profile?.name || senderInfo.wa_id || '';
   }
 
   // Método para manejar consultas de estado de pedido
@@ -1965,1294 +2278,91 @@ if (this.accumulatedContext && this.accumulatedContext.has(message.from)) {
     return message;
   }
 
-  // MÉTODO PARA ANÁLISIS DE CONTEXTO DE LA CONVERSACIÓN CON IA
-  // MÉTODO PARA ANÁLISIS DE CONTEXTO DE LA CONVERSACIÓN CON IA
-  async analyzeConversationContext(userId, currentMessage) {
+  // MÉTODO GENERADOR DE RESPUESTAS CONTEXTUALES
+  async generateContextualResponse(userId, responseType, specificPrompt) {
     try {
-      // NUEVO: Evitar análisis repetitivos del mismo mensaje
-      if (!this.lastAnalysis) {
-        this.lastAnalysis = {};
-        this.lastAnalysisResult = {};
+      // Construir contexto de conversación limitado
+      let historyContext = this.conversationHistory[userId] || [];
+      if (historyContext.length > 6) {
+        historyContext = historyContext.slice(-6);
       }
       
-      const lastAnalysisKey = `${userId}_last_analysis`;
-      if (this.lastAnalysis[lastAnalysisKey] === currentMessage) {
-        console.log("🔄 Reutilizando análisis previo para evitar duplicación");
-        return this.lastAnalysisResult[lastAnalysisKey] || {
-          messageType: "desconocido",
-          topics: [],
-          purchaseStage: "exploracion",
-          suggestedFlow: "none",
-          nextActionSuggestion: false
-        };
-      }
+      // Información de estado actual
+      const currentState = {
+        assistantState: this.assistantState[userId] || { step: 'unknown' },
+        appointmentState: this.appointmentState[userId],
+        interactionCount: this.interactionCounter[userId] || 0
+      };
       
-      // Guardar este mensaje para evitar duplicación
-      this.lastAnalysis[lastAnalysisKey] = currentMessage;
-      
-      // Construir prompt para análisis de contexto
-      const historyContext = this.conversationHistory[userId] || [];
-      const analysisPrompt = {
-        task: 'analisis_contexto',
+      // Construir prompt completo
+      const responsePrompt = {
+        task: 'generacion_respuesta',
+        responseType: responseType,
         systemPrompt: `
-          Eres un asistente de WhatsApp para una tienda de rosas preservadas que analiza conversaciones.
-          Analiza el historial de conversación y el mensaje actual del usuario.
-          Determina lo siguiente:
-          1. Tipo de mensaje (pregunta, afirmación, solicitud, etc.)
-          2. Temas principales mencionados (rosas, precios, entrega, etc.)
-          3. Etapa de compra (exploración, consulta, decisión, agendamiento, pago)
-          4. Flujo sugerido a seguir (ventas, consulta, agendamiento, pago)
-          5. Si se debe sugerir un siguiente paso
+          Eres un asistente virtual de WhatsApp para una tienda de rosas preservadas. Tu objetivo es ser amable,
+          útil y conciso. Responde según el tipo de respuesta solicitada y usa la información de la 
+          tienda proporcionada. Las respuestas deben ser naturales y conversacionales, entre 1-4 oraciones.
           
-          IMPORTANTE: Responde con un objeto JSON sin formato de código.
-          NO uses bloques de código markdown (\`\`\`json) al principio ni al final.
-          El formato debe ser exactamente:
-          {"messageType":"valor","topics":["valor1","valor2"],"purchaseStage":"valor","suggestedFlow":"valor","nextActionSuggestion":true/false}
+          IMPORTANTE: 
+          1. Nunca inventes información que no esté en la base de conocimiento.
+          2. Si no sabes algo, sugiere preguntar a un agente humano.
+          3. Respuestas breves y concisas, máximo 4 oraciones.
+          4. No incluyas emojis excesivos, solo 1-2 si son relevantes.
+          5. No te presentes ni te despidas en cada mensaje.
+          
+          INSTRUCCIÓN CRÍTICA: 
+          1. NUNCA repitas exactamente lo que el usuario acaba de decir
+          2. Responde a su consulta/mensaje directamente sin reiterarlo
+          3. No uses frases como "dices que...", "mencionas que...", "preguntas sobre..."
         `,
+        specificPrompt: specificPrompt,
         conversation: historyContext,
-        currentMessage: currentMessage,
-        knowledgeBase: {
-          productos: Object.keys(this.productKnowledge.productos),
-          agendamiento: true,
-          procesosCompra: true
-        }
+        stateInfo: currentState,
+        knowledgeBase: this.productKnowledge
       };
-
+      
       // Enviar a la IA
-      let analysisResult = await OpenAiService(analysisPrompt);
-
-      // Limpiar posibles bloques de código markdown o texto adicional
-      analysisResult = analysisResult.replace(/```json|```/g, '').trim();
-
-      // Si empieza con comentarios o caracteres no JSON, intentar encontrar el inicio del JSON
-      const jsonStart = analysisResult.indexOf('{');
-      const jsonEnd = analysisResult.lastIndexOf('}');
+      const rawResponse = await OpenAiService(responsePrompt);
       
-      if (jsonStart >= 0 && jsonEnd >= 0) {
-        analysisResult = analysisResult.substring(jsonStart, jsonEnd + 1);
+      // Limpiar y verificar la respuesta
+      let cleanedResponse = rawResponse.trim();
+      
+      // Verificar si hay un uso excesivo de emojis (más de 3)
+      const emojiCount = (cleanedResponse.match(/[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu) || []).length;
+      if (emojiCount > 3) {
+        // Reducir a máximo 2 emojis
+        cleanedResponse = cleanedResponse.replace(/[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, function(match, offset, string) {
+          return offset < 50 || offset > string.length - 50 ? match : '';
+        });
       }
-
-      // Parsearlo como JSON y devolverlo
-      try {
-        const parsedResult = JSON.parse(analysisResult);
-        
-        // Guardar resultado para referencia futura
-        this.lastAnalysisResult[lastAnalysisKey] = parsedResult;
-        
-        return parsedResult;
-      } catch (parseError) {
-        console.error("Error al parsear resultado de análisis:", parseError);
-        console.log("Texto que intentó parsear:", analysisResult);
-        
-        // Valor por defecto en caso de error
-        const defaultResult = {
-          messageType: "desconocido",
-          topics: [],
-          purchaseStage: "exploracion",
-          suggestedFlow: "none",
-          nextActionSuggestion: false
+      
+      // Verificar que la respuesta no está vacía
+      if (!cleanedResponse || cleanedResponse.length < 10) {
+        // Respuestas predeterminadas según el tipo
+        const defaultResponses = {
+          'venta': "Tenemos hermosas rosas preservadas en diferentes presentaciones y colores. ¿Te gustaría conocer nuestro catálogo?",
+          'consulta': "Entiendo tu consulta. ¿Te gustaría que te explique más sobre nuestros productos o precios?",
+          'iniciar_agendamiento': "Para agendar tu pedido, necesito algunos datos. ¿Cuál es tu nombre completo?",
+          'general': "Gracias por tu mensaje. ¿Puedo ayudarte con información sobre nuestros productos o servicios?"
         };
         
-        // Guardar resultado por defecto
-        this.lastAnalysisResult[lastAnalysisKey] = defaultResult;
-        
-        return defaultResult;
+        return defaultResponses[responseType] || "¿En qué más puedo ayudarte?";
       }
+      
+      return cleanedResponse;
     } catch (error) {
-      console.error("Error en análisis de contexto:", error);
+      console.error("Error al generar respuesta contextual:", error);
       
-      // Valor por defecto en caso de error
-      return {
-        messageType: "desconocido",
-        topics: [],
-        purchaseStage: "exploracion",
-        suggestedFlow: "none",
-        nextActionSuggestion: false
-      };
-    }
-  }
-
-  async mergeRelatedMessageContext(userId, currentMessageId, relatedMessageId) {
-    try {
-      console.log(`🔄 Fusionando contexto de mensajes relacionados: ${currentMessageId} con ${relatedMessageId}`);
-      
-      // Obtener historial de conversación reciente
-      const history = this.conversationHistory[userId] || [];
-      if (history.length < 2) return false;
-      
-      // Extraer últimos mensajes del usuario para combinarlos
-      const userMessages = history
-        .filter(msg => msg.role === 'user')
-        .slice(-3); // Considerar solo los últimos 3 mensajes
-      
-      if (userMessages.length < 2) return false;
-      
-      // Combinar mensajes para análisis de contexto unificado
-      const combinedMessage = userMessages
-        .map(msg => msg.content)
-        .join(" ");
-      
-      console.log(`🔄 Contexto combinado para análisis: "${combinedMessage}"`);
-      
-      // Realizar análisis unificado
-      const unifiedAnalysis = await this.analyzeConversationContext(userId, combinedMessage);
-      
-      // Guardar análisis unificado para usarlo en la próxima respuesta
-      if (!this.unifiedContextAnalysis) {
-        this.unifiedContextAnalysis = new Map();
-      }
-      
-      this.unifiedContextAnalysis.set(userId, {
-        analysis: unifiedAnalysis,
-        timestamp: Date.now(),
-        relatedMessageIds: [currentMessageId, relatedMessageId]
-      });
-      
-      console.log(`✅ Análisis unificado de contexto completado:`, unifiedAnalysis);
-      return true;
-    } catch (error) {
-      console.error("❌ Error al fusionar contexto de mensajes:", error);
-      return false;
-    }
-  }
-
-  // MÉTODO PARA GENERAR RESPUESTAS CONTEXTUALES CON IA
-  // MÉTODO PARA GENERAR RESPUESTAS CONTEXTUALES CON IA
-async generateContextualResponse(userId, responseType, specificPrompt) {
-  try {
-    // Construir contexto de conversación limitado (solo últimos 4-6 mensajes para evitar repeticiones)
-    let historyContext = this.conversationHistory[userId] || [];
-    if (historyContext.length > 6) {
-      historyContext = historyContext.slice(-6); // Solo usar los últimos 6 mensajes
-    }
-    
-    // Información de estado actual
-    const currentState = {
-      assistantState: this.assistantState[userId] || { step: 'unknown' },
-      appointmentState: this.appointmentState[userId],
-      interactionCount: this.interactionCounter[userId] || 0
-    };
-    
-    // Instrucción explícita para no repetir lo que dijo el usuario
-    const noRepeatInstruction = `
-      INSTRUCCIÓN CRÍTICA: 
-      1. NUNCA repitas exactamente lo que el usuario acaba de decir
-      2. Responde a su consulta/mensaje directamente sin reiterarlo
-      3. No uses frases como "dices que...", "mencionas que...", "preguntas sobre..."
-      4. Respuestas claras y concisas, sin redundancias, no tan extensas
-    `;
-    
-    // Construir prompt completo (CORREGIDO)
-    const responsePrompt = {
-      task: 'generacion_respuesta',
-      responseType: responseType,
-      systemPrompt: `
-        Eres un asistente virtual de WhatsApp para una tienda de rosas preservadas. Tu objetivo es ser amable,
-        útil y conciso. Responde según el tipo de respuesta solicitada y usa la información de la 
-        tienda proporcionada. Las respuestas deben ser naturales y conversacionales, entre 1-4 oraciones.
-        
-        IMPORTANTE: 
-        1. Nunca inventes información que no esté en la base de conocimiento.
-        2. Si no sabes algo, sugiere preguntar a un agente humano.
-        3. Respuestas breves y concisas, máximo 4 oraciones.
-        4. No incluyas emojis excesivos, solo 1-2 si son relevantes, no los uses siempre.
-        5. No te presentes ni te despidas en cada mensaje.
-        
-        ${noRepeatInstruction}
-      `,
-      specificPrompt: `${specificPrompt}\n\n${noRepeatInstruction}`,
-      conversation: historyContext,
-      stateInfo: currentState,
-      knowledgeBase: this.productKnowledge
-    };
-    
-    // Enviar a la IA
-    console.log(`🤖 Generando respuesta tipo: ${responseType}`);
-    const rawResponse = await OpenAiService(responsePrompt);
-    
-    // Limpiar y verificar la respuesta
-    let cleanedResponse = rawResponse.trim();
-    
-    // Verificar si la respuesta contiene repetición del último mensaje del usuario
-    const lastUserMessage = historyContext.length > 0 ? 
-      historyContext.filter(msg => msg.role === 'user').pop() : null;
-    
-    if (lastUserMessage && cleanedResponse.includes(lastUserMessage.content)) {
-      console.log("⚠️ Detectada repetición del mensaje del usuario en la respuesta, corrigiendo...");
-      // Simplificar respuesta para evitar repetición
-      cleanedResponse = cleanedResponse.replace(lastUserMessage.content, "");
-      cleanedResponse = cleanedResponse.replace(/^[^a-zA-Z0-9áéíóúÁÉÍÓÚüÜñÑ]+/, ""); // Limpiar caracteres iniciales
-      cleanedResponse = cleanedResponse.charAt(0).toUpperCase() + cleanedResponse.slice(1); // Primera letra mayúscula
-    }
-    
-    // NUEVO: Verificar si esta respuesta es similar a alguna reciente
-    if (this.isResponseSimilarToRecent && typeof this.isResponseSimilarToRecent === 'function') {
-      const similarityCheck = this.isResponseSimilarToRecent(userId, cleanedResponse);
-      
-      if (similarityCheck && similarityCheck.isDuplicate) {
-        console.log("⚠️ Evitando respuesta duplicada, modificando respuesta...");
-        
-        // Opciones para diversificar respuestas
-        const diversificationOptions = [
-          // Agregar un prefijo aclaratorio
-          () => `Para aclarar mejor, ${cleanedResponse}`,
-          
-          // Reformular completamente con un nuevo prompt
-          async () => {
-            const newPrompt = `
-              ${specificPrompt}
-              
-              IMPORTANTE: Genera una respuesta COMPLETAMENTE DIFERENTE a esta:
-              "${similarityCheck.similarResponse}"
-              
-              La nueva respuesta debe aportar información adicional o enfocarse en otro aspecto.
-            `;
-            
-            // Generar nueva respuesta con énfasis en diferenciación
-            const newResponse = await OpenAiService({
-              task: 'generacion_respuesta',
-              responseType: responseType + '_alternativo',
-              systemPrompt: `
-                Genera una respuesta alternativa que aporte información nueva
-                y diferente sobre el mismo tema. Evita repetir conceptos.
-              `,
-              specificPrompt: newPrompt,
-              conversation: this.conversationHistory[userId] || [],
-              stateInfo: {}, // Estado simplificado
-              knowledgeBase: this.productKnowledge
-            });
-            
-            return newResponse;
-          },
-          
-          // Enfocarse en un aspecto específico no mencionado antes
-          () => {
-            // Encontrar aspectos específicos para enfatizar basado en el tipo
-            const aspects = {
-              'venta': 'precio, disponibilidad y entrega',
-              'soporte': 'garantía y cuidados del producto',
-              'agendamiento': 'horarios y opciones de entrega',
-              'general': 'personalización y opciones disponibles',
-              'consulta': 'detalles técnicos y características'
-            };
-            
-            const focusAspect = aspects[responseType] || 'detalles adicionales';
-            return `Además, respecto a ${focusAspect}, te comento que ${cleanedResponse}`;
-          }
-        ];
-        
-        // Elegir aleatoriamente una estrategia de diversificación
-        const strategy = diversificationOptions[Math.floor(Math.random() * diversificationOptions.length)];
-        
-        try {
-          // Aplicar la estrategia (algunas pueden ser asíncronas)
-          const diversifiedResponse = await strategy();
-          if (diversifiedResponse) {
-            cleanedResponse = diversifiedResponse;
-          }
-        } catch (diversificationError) {
-          console.log("⚠️ Error al diversificar respuesta:", diversificationError.message);
-          // Si hay error en la diversificación, usar la respuesta original
-        }
-      }
-    }
-    
-    // Si la respuesta está vacía o es demasiado corta después de limpiarla, usar respuesta predeterminada
-    if (!cleanedResponse || cleanedResponse.length < 10) {
-      console.log("⚠️ Respuesta demasiado corta después de limpieza, usando respuesta predeterminada");
-      const defaultResponses = {
-        'catalogo_enviado': "¿Hay algún producto específico que te interese? También puedo explicarte el proceso de compra si lo deseas.",
-        'consulta': "Lo siento, no tengo información específica sobre esa consulta ahora mismo. ¿Puedo ayudarte con otra cosa?",
+      // Proporcionar respuestas predeterminadas
+      const fallbackResponses = {
+        'venta': "Tenemos hermosas rosas preservadas en diferentes presentaciones y colores. ¿Te gustaría conocer nuestro catálogo?",
+        'consulta': "Entiendo tu consulta. Tenemos opciones desde $89.000 para la Mini hasta $149.000 para la Premium.",
         'iniciar_agendamiento': "Para agendar tu pedido, necesito algunos datos. ¿Cuál es tu nombre completo?",
-        'iniciar_pago': "Para procesar tu pago, te indico los métodos disponibles: Nequi, Bancolombia, Daviplata y PSE. ¿Cuál prefieres?",
-        'general': "Gracias por tu mensaje. ¿Puedo ayudarte con información sobre nuestros productos o servicios?",
-        'sugerencia': "¿Te gustaría ver nuestro catálogo o agendar una entrega?",
-        'bienvenida': "¡Hola! Soy tu asistente virtual de la tienda de rosas preservadas. ¿En qué puedo ayudarte hoy?"
+        'general': "Gracias por tu mensaje. ¿Puedo ayudarte con información sobre nuestros productos o servicios?"
       };
       
-      return defaultResponses[responseType] || "¿En qué más puedo ayudarte?";
+      return fallbackResponses[responseType] || "¿En qué más puedo ayudarte?";
     }
-    
-    return cleanedResponse;
-  } catch (error) {
-    console.error("Error al generar respuesta contextual:", error);
-    
-    // Proporcionar respuestas predeterminadas basadas en el tipo de respuesta solicitado
-    const fallbackResponses = {
-      'bienvenida': "¡Hola! Soy tu asistente virtual de la tienda de rosas preservadas. ¿En qué puedo ayudarte hoy?",
-      'catalogo_enviado': "¿Hay algún producto específico que te interese? También puedo explicarte el proceso de compra si lo deseas.",
-      'consulta': "Entiendo tu consulta. Déjame brindarte la información que necesitas.",
-      'venta': "Tenemos hermosas rosas preservadas en diferentes presentaciones y colores. ¿Te gustaría conocer nuestro catálogo?",
-      'soporte': "Estoy aquí para ayudarte. ¿Podrías darme más detalles sobre tu consulta?",
-      'agendamiento': "Para agendar tu pedido, necesito algunos datos. ¿Podemos comenzar con tu nombre completo?",
-      'iniciar_agendamiento': "Para agendar tu pedido, necesito algunos datos. ¿Cuál es tu nombre completo?"
-    };
-    
-    return fallbackResponses[responseType] || "Lo siento, tuve un problema al generar una respuesta. ¿Puedo ayudarte con otra cosa?";
-  }
-}
-
-  // MÉTODO PARA MANEJAR EL FLUJO DE ASISTENTE USANDO IA MEJORADA
-  async handleAssistantFlowWithAI(to, message, messageId, contextAnalysis) {
-    try {
-      // NUEVO: Verificar si ya hay un mensaje en procesamiento para este usuario
-      let isRelatedMessage = false;
-      try {
-        isRelatedMessage = this.isMessageBeingProcessed(to, messageId);
-      } catch (processingError) {
-        console.log(`⚠️ Error al verificar procesamiento: ${processingError.message}`);
-        // Continuar con isRelatedMessage = false
-      }
-      
-      if (isRelatedMessage) {
-        console.log(`🔀 Detectado mensaje relacionado [${messageId}], ajustando respuesta`);
-        
-        // En lugar de duplicar, mejorar respuesta anterior o generar una respuesta de seguimiento
-        // especial que combine el contexto de ambos mensajes
-        const combineContext = true; 
-      }
-  
-      if (!this.assistantState[to]) {
-        this.assistantState[to] = { step: 'general_inquiry' };
-      }
-    
-      const state = this.assistantState[to];
-      
-      // Incrementar el contador
-      if (!this.interactionCounter[to]) {
-        this.interactionCounter[to] = 1;
-      } else {
-        this.interactionCounter[to]++;
-      }
-      
-      // MODIFICADO: Verificar explícitamente si es una consulta/pregunta aquí 
-      // para evitar procesamiento duplicado
-      const isQuery = contextAnalysis.messageType === 'pregunta' || 
-                      contextAnalysis.messageType === 'consulta' ||
-                      this.isQueryMessage(message.toLowerCase());
-      
-      // Configurar prompt específico según el estado actual y análisis
-      let promptType = 'general';
-      let promptSpecific;
-  
-      // Verificar si debemos incluir sugerencia en la misma respuesta
-      const includeSuggestion = contextAnalysis.nextActionSuggestion && 
-                               (this.interactionCounter[to] % 3 === 0); // Sugerir cada 3 interacciones
-  
-      // MODIFICADO: Usar lógica unificada para mensajes de consulta vs generales
-      if (isQuery) {
-        // Manejar caso de consulta específica
-        promptType = 'consulta_con_sugerencia';
-        
-        promptSpecific = `
-          El usuario está haciendo una consulta sobre: "${message}".
-          Su etapa de compra es: ${contextAnalysis.purchaseStage}.
-          Los temas mencionados son: ${contextAnalysis.topics.join(', ')}.
-          
-          ${includeSuggestion ? 
-            `Después de tu respuesta principal, incluye en el mismo mensaje una breve sugerencia
-            relacionada con los temas mencionados. La sugerencia debe guiar al usuario hacia un 
-            siguiente paso natural.` : 
-            `Genera una respuesta clara y directa, sin sugerencias adicionales.`}
-        `;
-      }
-      // Personalizar según el estado actual para casos NO-consulta
-      else if (state.step === 'sales_interaction') {
-        promptType = 'venta';
-        
-        promptSpecific = `
-          El usuario está en un flujo de ventas y dice: "${message}". 
-          Su etapa de compra es: ${contextAnalysis.purchaseStage}. 
-          ${includeSuggestion ? 
-            `Después de tu respuesta principal, incluye en el mismo mensaje una breve sugerencia
-            de siguiente paso (ver catálogo, elegir producto, agendar entrega, etc.).` : 
-            `Genera una respuesta que impulse la venta.`}
-        `;
-      } 
-      else if (state.step === 'support_interaction') {
-        promptType = 'soporte';
-        
-        promptSpecific = `
-          El usuario necesita soporte y dice: "${message}". 
-          ${includeSuggestion ? 
-            `Al final, incluye una breve sugerencia de siguiente paso.` : 
-            `Genera una respuesta de asistencia útil.`}
-        `;
-      }
-      else if (state.intent === 'suggest_appointment') {
-        promptType = 'sugerir_agendamiento';
-        promptSpecific = `
-          El usuario está considerando agendar y dice: "${message}". 
-          Genera una respuesta que incentive el agendamiento y pregunte directamente si desea proceder.
-        `;
-      }
-      else {
-        // Para casos generales
-        promptSpecific = `
-          El usuario dice: "${message}". Genera una respuesta útil según el contexto.
-          ${includeSuggestion ? 
-            `Al final, incluye una breve sugerencia de siguiente paso relacionada con la tienda.` : 
-            ``}
-        `;
-      }
-  
-      // Generar respuesta con IA (que ahora posiblemente incluye sugerencia)
-      let response = await this.generateContextualResponse(to, promptType, promptSpecific);
-  
-      console.log(`✅ Generando respuesta tipo ${promptType} (incluye sugerencia: ${includeSuggestion ? 'sí' : 'no'})`);
-      
-      // Verificar si existe un análisis de contexto unificado reciente
-if (this.unifiedContextAnalysis && this.unifiedContextAnalysis.has(to)) {
-  const unifiedData = this.unifiedContextAnalysis.get(to);
-  const isRecent = (Date.now() - unifiedData.timestamp) < 30000; // 30 segundos
-  
-  if (isRecent && Array.isArray(unifiedData.relatedMessageIds) && 
-      unifiedData.relatedMessageIds.includes(messageId)) {
-    // Usar el análisis unificado en lugar del individual
-    console.log(`🔄 Usando análisis de contexto unificado para evitar respuestas duplicadas`);
-    contextAnalysis = unifiedData.analysis;
-    
-    // Limpiar después de usar para evitar reutilización inapropiada
-    setTimeout(() => {
-      this.unifiedContextAnalysis.delete(to);
-    }, 5000);
-  }
-}
-      // Humanizar respuesta
-      const userData = this.userProfiles.getPersonalizationData(to);
-      response = HumanLikeUtils.addResponseVariability(response);
-      
-      // Añadir errores humanos ocasionalmente (solo 10% del tiempo en este caso)
-      if (Math.random() > 0.9) {
-        response = HumanLikeUtils.addHumanLikeErrors(response);
-      }
-      
-      // Añadir retraso humanizado
-      await HumanLikeUtils.simulateTypingIndicator(response.length);
-      
-      // Actualizar estado según análisis de IA
-      if (contextAnalysis.suggestedFlow === 'agendamiento' && 
-          (this.isPositiveResponse(message) || message.toLowerCase().includes('agendar'))) {
-        // Iniciar flujo de agendamiento
-        this.appointmentState[to] = { step: 'name' };
-        delete this.assistantState[to]; // Limpiar estado del asistente
-        
-        const agendaMsg = await this.generateContextualResponse(
-          to,
-          'iniciar_agendamiento',
-          'El usuario quiere agendar. Genera una respuesta para iniciar el proceso pidiendo su nombre'
-        );
-        
-        await whatsappService.sendMessage(to, agendaMsg, messageId);
-        this.updateConversationHistory(to, 'assistant', agendaMsg);
-        return;
-      }
-      
-      // Enviar la respuesta al usuario
-      await whatsappService.sendMessage(to, response, messageId);
-      this.updateConversationHistory(to, 'assistant', response);
-      
-      // Actualizar el estado según el análisis
-      if (contextAnalysis.messageType === 'pregunta') {
-        state.intent = 'query';
-      } else if (contextAnalysis.suggestedFlow !== 'none') {
-        state.step = `${contextAnalysis.suggestedFlow}_interaction`;
-      }
-      
-      console.log("✅ Respuesta IA de flujo asistente enviada");
-      
-      // Asegurarse de llamar finishMessageProcessing correctamente
-      try {
-        this.finishMessageProcessing(to, messageId);
-      } catch (cleanupError) {
-        console.log(`⚠️ Error menor limpiando estado de procesamiento: ${cleanupError.message}`);
-      }
-  
-    } catch (error) {
-      console.error("❌ Error en flujo asistente IA:", error);
-      await whatsappService.sendMessage(to, 'Ocurrió un error. Por favor, intenta de nuevo.', messageId);
-      this.updateConversationHistory(to, 'assistant', 'Ocurrió un error. Por favor, intenta de nuevo.');
-      
-      // Aún así, tratar de limpiar el procesamiento
-      try {
-        this.finishMessageProcessing(to, messageId);
-      } catch (cleanupError) {
-        console.log(`⚠️ Error en limpieza: ${cleanupError.message}`);
-      }
-    }
-  }
-
-  // MÉTODO MEJORADO PARA FLUJO DE AGENDAMIENTO CON SOPORTE PARA MENSAJES MÚLTIPLES
-  async handleAppointmentFlow(to, message, messageId) {
-    try {
-      if (!this.appointmentState[to]) {
-        this.appointmentState[to] = { step: 'name' };
-        
-        // Usar IA para generar mensaje inicial
-        let response = await this.generateContextualResponse(
-          to, 
-          'iniciar_agendamiento',
-          'Genera un mensaje para iniciar el proceso de agendamiento pidiendo el nombre del cliente'
-        );
-        
-        // Humanizar respuesta
-        response = HumanLikeUtils.addResponseVariability(response);
-        
-        // Añadir retraso humanizado
-        await HumanLikeUtils.simulateTypingIndicator(response.length);
-        
-        await whatsappService.sendMessage(to, response, messageId);
-        this.updateConversationHistory(to, 'assistant', response);
-        return;
-      }
-
-      const state = this.appointmentState[to];
-      let response;
-      let promptType = 'agendamiento';
-      let nextStep = state.step;
-
-      // NUEVO: Parsear mensajes múltiples con inteligencia
-      const messageParts = this.parseMultipleInputs(message, state.step);
-      
-      // NUEVO: Registrar información adicional encontrada para usarla después
-      if (messageParts.additionalInfo) {
-        for (const [key, value] of Object.entries(messageParts.additionalInfo)) {
-          if (!state[key] && value) {
-            console.log(`💡 Detectada información adicional en mensaje: ${key} = ${value}`);
-            state[key] = value;
-          }
-        }
-      }
-      
-      // Usar el mensaje principal para el flujo actual
-      const mainMessage = messageParts.mainPart;
-
-      switch (state.step) {
-        case 'name':
-          state.name = mainMessage;
-          
-          // Si ya detectamos la dirección en el mismo mensaje, avanzar dos pasos
-          if (state.direccion || state.felicitado) {
-            if (state.direccion) {
-              nextStep = 'fecha';  // Saltamos dirección porque ya la tenemos
-              promptType = 'agendamiento_solicitud_fecha';
-            } else {
-              nextStep = 'felicitado';
-              promptType = 'agendamiento_solicitud_felicitado';
-            }
-          } else {
-            nextStep = 'felicitado';
-            promptType = 'agendamiento_solicitud_felicitado';
-          }
-          break;
-          
-        case 'felicitado':
-          state.felicitado = mainMessage;
-          
-          // Si ya detectamos la fecha en el mismo mensaje, avanzar
-          if (state.fecha) {
-            nextStep = 'franja_horaria';
-            promptType = 'agendamiento_solicitud_franja';
-          } else if (state.direccion) {
-            nextStep = 'fecha';
-            promptType = 'agendamiento_solicitud_fecha';
-          } else {
-            nextStep = 'fecha';
-            promptType = 'agendamiento_solicitud_fecha';
-          }
-          break;
-          
-        case 'fecha':
-          // Usar IA para validar formato de fecha
-          const fechaValidationPrompt = {
-            task: 'validacion_fecha',
-            fecha: mainMessage
-          };
-          
-          let fechaValidation = await OpenAiService(fechaValidationPrompt);
-          
-          // Limpiar cualquier formato markdown del JSON antes de parsearlo
-          fechaValidation = fechaValidation.replace(/```json|```/g, '').trim();
-          
-          // Buscar el inicio y final del JSON si hay texto adicional
-          const jsonStart = fechaValidation.indexOf('{');
-          const jsonEnd = fechaValidation.lastIndexOf('}') + 1;
-          
-          if (jsonStart >= 0 && jsonEnd > jsonStart) {
-            fechaValidation = fechaValidation.substring(jsonStart, jsonEnd);
-          }
-          
-          try {
-            const fechaResult = JSON.parse(fechaValidation);
-            
-            if (!fechaResult.valid) {
-              promptType = 'agendamiento_fecha_invalida';
-              // No actualizar nextStep para mantener en este paso
-            } else {
-              state.fecha = fechaResult.formattedDate; // Usar fecha formateada
-              
-              // Si ya detectamos la franja horaria en el mensaje, avanzar
-              if (state.franja_horaria) {
-                nextStep = 'pedido';
-                promptType = 'agendamiento_solicitud_pedido';
-              } else {
-                nextStep = 'franja_horaria';
-                promptType = 'agendamiento_solicitud_franja';
-              }
-            }
-          } catch (jsonError) {
-            console.error("Error al parsear resultado de validación de fecha:", jsonError);
-            console.log("Texto que intentó parsear:", fechaValidation);
-            
-            // Manejar el error suavemente para el usuario
-            promptType = 'agendamiento_fecha_invalida';
-            // No actualizar nextStep para mantener en este paso
-          }
-          break;
-          
-        case 'franja_horaria':
-          // Usar IA para validar franja horaria
-          const franjaValidationPrompt = {
-            task: 'validacion_franja',
-            franja: mainMessage
-          };
-          
-          let franjaValidation = await OpenAiService(franjaValidationPrompt);
-          
-          // Limpiar cualquier formato markdown del JSON antes de parsearlo
-          franjaValidation = franjaValidation.replace(/```json|```/g, '').trim();
-          
-          // Buscar el inicio y final del JSON si hay texto adicional
-          const franjaJsonStart = franjaValidation.indexOf('{');
-          const franjaJsonEnd = franjaValidation.lastIndexOf('}') + 1;
-          
-          if (franjaJsonStart >= 0 && franjaJsonEnd > franjaJsonStart) {
-            franjaValidation = franjaValidation.substring(franjaJsonStart, franjaJsonEnd);
-          }
-          
-          try {
-            const franjaResult = JSON.parse(franjaValidation);
-            
-            if (!franjaResult.valid) {
-              promptType = 'agendamiento_franja_invalida';
-              // No actualizar nextStep para mantener en este paso
-            } else {
-              state.franja_horaria = franjaResult.normalizedValue; // Usar valor normalizado
-              
-              // Si ya detectamos información del pedido en el mensaje, avanzar
-              if (state.pedido) {
-                nextStep = 'confirmacion';
-                promptType = 'agendamiento_solicitud_confirmacion';
-              } else {
-                nextStep = 'pedido';
-                promptType = 'agendamiento_solicitud_pedido';
-              }
-            }
-          } catch (jsonError) {
-            console.error("Error al parsear resultado de validación de franja:", jsonError);
-            console.log("Texto que intentó parsear:", franjaValidation);
-            
-            // Manejar el error suavemente para el usuario
-            promptType = 'agendamiento_franja_invalida';
-            // No actualizar nextStep para mantener en este paso
-          }
-          break;
-          
-        case 'pedido':
-          if (!mainMessage.trim()) {
-            promptType = 'agendamiento_pedido_invalido';
-          } else {
-            state.pedido = mainMessage;
-            
-            // Si ya detectamos dirección en el mensaje, usarla
-            if (state.direccion) {
-              nextStep = 'confirmacion';
-              promptType = 'agendamiento_solicitud_confirmacion';
-            } else {
-              // Pedir dirección si no se ha proporcionado antes
-              nextStep = 'direccion';
-              promptType = 'agendamiento_solicitud_direccion';
-            }
-          }
-          break;
-          
-        case 'direccion':
-          state.direccion = mainMessage;
-          nextStep = 'confirmacion';
-          promptType = 'agendamiento_solicitud_confirmacion';
-          break;
-          
-        case 'confirmacion':
-          if (this.isPositiveResponse(mainMessage)) {
-            // Completar el agendamiento
-            response = this.completeAppointment(to);
-            this.updateConversationHistory(to, 'assistant', response);
-            
-            // Añadir retraso humanizado
-            await HumanLikeUtils.simulateTypingIndicator(response.length);
-            
-            await whatsappService.sendMessage(to, response, messageId);
-            
-            // Enviar mensaje de seguimiento generado por IA
-            const followupPrompt = `
-              El usuario ha completado el agendamiento exitosamente. 
-              Datos: Nombre: ${state.name}, Felicitado: ${state.felicitado}, 
-              Fecha: ${state.fecha}, Franja: ${state.franja_horaria}, 
-              Pedido: ${state.pedido}, Dirección: ${state.direccion || 'No proporcionada'}.
-              
-              Genera un mensaje de seguimiento amable ofreciendo asistencia adicional.
-            `;
-            
-            let followupMsg = await this.generateContextualResponse(to, 'agendamiento_completado', followupPrompt);
-            
-            // Humanizar respuesta
-            followupMsg = HumanLikeUtils.addResponseVariability(followupMsg);
-            
-            // Añadir retraso humanizado (más largo para simular procesamiento)
-            await HumanLikeUtils.simulateTypingIndicator(followupMsg.length * 1.5);
-            
-            await whatsappService.sendMessage(to, followupMsg, messageId);
-            this.updateConversationHistory(to, 'assistant', followupMsg);
-            
-            return;
-          } else if (mainMessage.toLowerCase().includes('no')) {
-            promptType = 'agendamiento_cancelado';
-            delete this.appointmentState[to];
-            // Reiniciar el estado de asistente
-            this.assistantState[to] = { step: 'general_inquiry' };
-          } else {
-            promptType = 'agendamiento_confirmacion_invalida';
-            // No actualizar nextStep
-          }
-          break;
-          
-        default:
-          promptType = 'agendamiento_reinicio';
-          delete this.appointmentState[to];
-          this.assistantState[to] = { step: 'general_inquiry' };
-      }
-
-      // Actualizar el paso si es necesario
-      if (nextStep !== state.step) {
-        state.step = nextStep;
-      }
-
-      // NUEVO: Generar un prompt que tenga en cuenta la información extra detectada
-      let extraInfoText = '';
-      if (messageParts.additionalInfo && Object.keys(messageParts.additionalInfo).length > 0) {
-        extraInfoText = `También se detectó información adicional que se ha guardado: ${
-          Object.entries(messageParts.additionalInfo)
-            .map(([key, value]) => `${key}: ${value}`)
-            .join(', ')
-        }.`;
-      }
-
-      // Generar respuesta contextual con IA
-      const promptSpecific = `
-        El usuario está en el paso "${state.step}" del proceso de agendamiento y respondió: "${message}".
-        ${state.name ? `Nombre: ${state.name}.` : ''}
-        ${state.felicitado ? `Felicitado: ${state.felicitado}.` : ''}
-        ${state.fecha ? `Fecha: ${state.fecha}.` : ''}
-        ${state.franja_horaria ? `Franja: ${state.franja_horaria}.` : ''}
-        ${state.pedido ? `Pedido: ${state.pedido}.` : ''}
-        ${state.direccion ? `Dirección: ${state.direccion}.` : ''}
-        ${extraInfoText}
-        
-        Genera una respuesta apropiada para este paso del agendamiento.
-      `;
-      
-      response = await this.generateContextualResponse(to, promptType, promptSpecific);
-      
-      // Humanizar respuesta
-      response = HumanLikeUtils.addResponseVariability(response);
-      
-      // Añadir retraso humanizado
-      await HumanLikeUtils.simulateTypingIndicator(response.length);
-      
-      await whatsappService.sendMessage(to, response, messageId);
-      this.updateConversationHistory(to, 'assistant', response);
-
-      console.log(`✅ Flujo de agendamiento paso "${state.step}" completado`);
-    } catch (error) {
-      console.error("❌ Error en flujo de agendamiento:", error);
-      await whatsappService.sendMessage(to, 'Hubo un error en el flujo. Por favor, intenta de nuevo.', messageId);
-      this.updateConversationHistory(to, 'assistant', 'Hubo un error en el flujo. Por favor, intenta de nuevo.');
-    }
-  }
-
-  // NUEVO: Método para parsear mensajes múltiples y extraer información relevante
-  parseMultipleInputs(message, currentStep) {
-  // Por defecto, usamos todo el mensaje como la parte principal
-  const result = {
-    mainPart: message,
-    additionalInfo: {}
-  };
-  
-  // Análisis contextual basado en patrones
-  const addressPattern = /\b(calle|carrera|avenida|diagonal|transversal|cr|cra|cl|av|diag|trans|kra)[\s\.]*\d+[\s\w\-\.#]+/i;
-  const cityPattern = /\b(en|de)\s+([a-zA-ZáéíóúÁÉÍÓÚüÜñÑ\s]+)\b/i;
-  const phonePattern = /\b(numero|teléfono|telefono|tel|celular|contacto|whatsapp|#)\s*[\d\-\+]+\b/i;
-  const namePattern = /\b([A-Za-záéíóúÁÉÍÓÚüÜñÑ]{2,}\s+[A-Za-záéíóúÁÉÍÓÚüÜñÑ]{2,})\b/;
-  
-  // Dividir el mensaje en partes si contiene separadores comunes
-  const parts = message.split(/[,.;:\n]+/).map(part => part.trim()).filter(part => part.length > 0);
-  
-  if (parts.length <= 1) {
-    // Buscar información en el mensaje completo si no hay múltiples partes
-    const addressMatch = message.match(addressPattern);
-    const cityMatch = message.match(cityPattern);
-    const phoneMatch = message.match(phonePattern);
-    const nameMatch = message.match(namePattern);
-    
-    if (addressMatch) result.additionalInfo.direccion = addressMatch[0];
-    if (cityMatch) result.additionalInfo.ciudad = cityMatch[2];
-    if (phoneMatch) result.additionalInfo.contacto = phoneMatch[0];
-    if (nameMatch && currentStep !== 'name') result.additionalInfo.nombre = nameMatch[1];
-    
-    return result;
-  }
-  
-  // La primera parte suele ser la respuesta principal al paso actual
-  result.mainPart = parts[0];
-  
-  // Analizar el resto de partes para detectar información adicional
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    
-    // Detectar dirección
-    const addressMatch = part.match(addressPattern);
-    if (addressMatch) {
-      result.additionalInfo.direccion = addressMatch[0];
-      // Si esta es la primera parte y estamos en otro paso, actualizar la parte principal
-      if (i === 0 && currentStep !== 'direccion') {
-        result.mainPart = addressMatch[0];
-      }
-      continue;
-    }
-    
-    // Detectar ciudad
-    const cityMatch = part.match(cityPattern);
-    if (cityMatch) {
-      result.additionalInfo.ciudad = cityMatch[2];
-      continue;
-    }
-    
-    // Detectar contacto
-    const phoneMatch = part.match(phonePattern);
-    if (phoneMatch) {
-      result.additionalInfo.contacto = phoneMatch[0];
-      continue;
-    }
-    
-    // Detectar posibles nombres
-    const nameMatch = part.match(namePattern);
-    if (nameMatch && part.length > 5) {
-      // Determinar si es nombre o felicitado basado en el contexto
-      if (currentStep === 'name') {
-        result.mainPart = nameMatch[1];
-      } else if (currentStep === 'felicitado') {
-        result.mainPart = nameMatch[1];
-      } else {
-        result.additionalInfo.nombre = nameMatch[1];
-      }
-      continue;
-    }
-    
-    // Detectar fecha
-    const dateMatch = part.match(/\d{1,2}[\/\-\.]\d{1,2}(?:[\/\-\.]\d{2,4})?/);
-    if (dateMatch) {
-      result.additionalInfo.fecha = dateMatch[0];
-      if (currentStep === 'fecha') {
-        result.mainPart = dateMatch[0];
-      }
-      continue;
-    }
-    
-    // Detectar franja horaria
-    if (
-      part.toLowerCase().includes('mañana') || 
-      part.toLowerCase().includes('tarde') || 
-      part.toLowerCase().includes('noche') ||
-      part.toLowerCase().includes('hora') ||
-      /\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m|p\.m)/i.test(part)
-    ) {
-      result.additionalInfo.franja_horaria = part;
-      if (currentStep === 'franja_horaria') {
-        result.mainPart = part;
-      }
-      continue;
-    }
-    
-    // Si el paso actual es 'pedido' o partes largas podrían ser un pedido
-    if ((currentStep === 'pedido' || part.length > 15) && 
-        !result.additionalInfo.pedido &&
-        !part.match(addressPattern) && 
-        !part.match(phonePattern)) {
-      result.additionalInfo.pedido = part;
-    }
-  }
-  
-  // Optimización: si tenemos dirección y ciudad separadas, combinarlas
-  if (result.additionalInfo.direccion && result.additionalInfo.ciudad) {
-    result.additionalInfo.direccion_completa = 
-      `${result.additionalInfo.direccion}, ${result.additionalInfo.ciudad}`;
-  }
-  
-  return result;
-}
-
-isResponseSimilarToRecent(userId, proposedResponse, timeWindow = 60000) {
-  // Obtener el historial de conversación del usuario
-  const history = this.conversationHistory[userId] || [];
-  
-  // Si no hay historial, no puede haber respuestas similares
-  if (history.length < 2) return false;
-  
-  // Filtrar solo respuestas del asistente recientes
-  const recentResponses = history
-    .filter(msg => msg.role === 'assistant')
-    .slice(-3); // Considerar solo las últimas 3 respuestas
-  
-  // Verificar si alguna respuesta reciente es similar
-  for (const pastResponse of recentResponses) {
-    // Calculamos similitud
-    const similarity = this.calculateTextSimilarity(
-      proposedResponse,
-      pastResponse.content
-    );
-    
-    // Si la similitud es alta, consideramos que es una respuesta duplicada
-    if (similarity > 0.6) { // Umbral de 60% de similitud
-      console.log(`🔄 Detectada respuesta similar (${Math.round(similarity * 100)}% de similitud)`);
-      return {
-        isDuplicate: true,
-        similarResponse: pastResponse.content,
-        similarity
-      };
-    }
-  }
-  
-  return {
-    isDuplicate: false
-  };
-}
-
-// Método auxiliar para calcular similitud entre textos
-calculateTextSimilarity(text1, text2) {
-  // Si alguno de los textos es vacío, no hay similitud
-  if (!text1 || !text2) return 0;
-  
-  // Normalizar textos (minúsculas, sin acentos, sin signos de puntuación)
-  const normalize = (text) => {
-    return text
-      .toLowerCase()
-      .normalize("NFD") // Descomponer acentos
-      .replace(/[\u0300-\u036f]/g, "") // Eliminar acentos
-      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") // Eliminar puntuación
-      .replace(/\s{2,}/g, " "); // Eliminar espacios múltiples
-  };
-  
-  const normalizedText1 = normalize(text1);
-  const normalizedText2 = normalize(text2);
-  
-  // Obtener palabras únicas de cada texto
-  const words1 = new Set(normalizedText1.split(/\s+/));
-  const words2 = new Set(normalizedText2.split(/\s+/));
-  
-  // Contar palabras en común
-  let commonWords = 0;
-  for (const word of words1) {
-    if (words2.has(word)) {
-      commonWords++;
-    }
-  }
-  
-  // Calcular coeficiente de Jaccard
-  const totalWords = words1.size + words2.size - commonWords;
-  if (totalWords === 0) return 0;
-  
-  return commonWords / totalWords;
-}
-
-  // MÉTODO MEJORADO DE COMPLETAR CITA CON CONEXIÓN A GOOGLE SHEETS
-  completeAppointment(to) {
-    try {
-      const appointment = this.appointmentState[to];
-      
-      // Validación de datos completos antes de guardar
-      if (!appointment.name || !appointment.felicitado || !appointment.fecha || 
-          !appointment.franja_horaria || !appointment.pedido) {
-        console.error("❌ Datos de cita incompletos:", appointment);
-        return "Lo siento, faltan datos en tu cita. Por favor, intenta el proceso nuevamente.";
-      }
-      
-      const userData = [
-        appointment.name,
-        appointment.felicitado,
-        appointment.fecha,
-        appointment.franja_horaria,
-        appointment.pedido,
-        appointment.direccion || "No proporcionada",
-        new Date().toISOString()
-      ];
-      
-      console.log("📊 Intentando guardar cita en Google Sheets:", userData);
-      
-      // Guardar en Google Sheets y manejar posibles errores
-      try {
-        appendToSheet(userData);
-        console.log("✅ Cita guardada en Google Sheets correctamente");
-      } catch (sheetError) {
-        console.error("❌ Error guardando en Google Sheets:", sheetError);
-        // No lanzar error, continuar con el flujo para dar buena experiencia al usuario
-      }
-      
-      // Limpiar estado de agendamiento
-      delete this.appointmentState[to];
-      
-      // Reiniciar el estado de asistente para continuar la conversación
-      this.assistantState[to] = { 
-        step: 'post_appointment',
-        lastAction: 'appointment_completed'
-      };
-      
-      // Reiniciar el contador de interacciones
-      this.interactionCounter[to] = 0;
-      
-      // Actualizar perfil de usuario con la información de la cita
-      this.userProfiles.updateUserProfile(to, {
-        name: appointment.name,
-        lastAppointment: {
-          felicitado: appointment.felicitado,
-          fecha: appointment.fecha,
-          pedido: appointment.pedido,
-          direccion: appointment.direccion
-        }
-      });
-      
-      return `¡Gracias por agendar tu pedido!\n\nResumen:\nNombre: ${appointment.name}\nFelicitado: ${appointment.felicitado}\nFecha: ${appointment.fecha}\nFranja horaria: ${appointment.franja_horaria}\nPedido: ${appointment.pedido}\n${appointment.direccion ? `Dirección: ${appointment.direccion}\n` : ''}Nos pondremos en contacto contigo pronto para confirmar los detalles.`;
-    } catch (error) {
-      console.error("❌ Error al completar cita:", error);
-      return "Lo siento, hubo un problema al guardar tu cita. Por favor, intenta nuevamente o contáctanos directamente.";
-    }
-  }
-
-  // MÉTODOS AUXILIARES MEJORADOS
-  
-  // Método para enviar catálogo
-  async sendMedia(to, messageId) {
-    try {
-      console.log(`📤 Enviando catálogo a ${to}`);
-      
-      const mediaUrl = 'https://s3.us-east-2.amazonaws.com/prueba.api.whatsapp/Copia+de+Catalogo+Dommo+%5BTama%C3%B1o+original%5D.pdf';
-      const caption = 'Catálogo Dommo';
-      const type = 'document';
-      
-      try {
-        // Añadir retraso humanizado antes de enviar (simular que lo está buscando)
-        await HumanLikeUtils.simulateTypingIndicator(2000); // Retraso base de 2 segundos
-        
-        await whatsappService.sendMediaMessage(to, type, mediaUrl, caption, messageId);
-        console.log("✅ Documento enviado correctamente");
-        
-        // Asegurar que se establece el estado del asistente para continuar la conversación
-        this.assistantState[to] = { 
-          step: 'sales_interaction', 
-          intent: 'catalog_inquiry',
-          catalogSent: true // Marcador específico para saber que acabamos de enviar el catálogo
-        };
-        
-        // Enviar mensaje de seguimiento después del catálogo (usando IA)
-        let followupMsg = await this.generateContextualResponse(
-          to,
-          'catalogo_enviado',
-          'Acabamos de enviar el catálogo. Genera un mensaje de seguimiento ofreciendo ayuda adicional'
-        );
-        
-        // Humanizar respuesta
-        followupMsg = HumanLikeUtils.addResponseVariability(followupMsg);
-        
-        // Añadir retraso humanizado
-        await HumanLikeUtils.simulateTypingIndicator(followupMsg.length);
-        
-        await whatsappService.sendMessage(to, followupMsg, messageId);
-        this.updateConversationHistory(to, 'assistant', followupMsg);
-        
-        return true;
-      } catch (mediaError) {
-        console.error("❌ Error al enviar documento:", mediaError);
-        
-        // Alternativa: enviar como texto con enlace
-        const catalogoMsg = `Aquí tienes nuestro catálogo de productos 📑\n\n${mediaUrl}\n\nPuedes descargarlo haciendo clic en el enlace. ¿Hay algún producto específico que te interese? También puedo explicarte el proceso de compra.`;
-        
-        await whatsappService.sendMessage(to, catalogoMsg, messageId);
-        this.updateConversationHistory(to, 'assistant', catalogoMsg);
-        console.log("✅ Enlace de catálogo enviado como alternativa");
-        
-        // Establecer estado igual que arriba
-        this.assistantState[to] = { 
-          step: 'sales_interaction', 
-          intent: 'catalog_inquiry',
-          catalogSent: true
-        };
-        
-        return true;
-      }
-    } catch (error) {
-      console.error("🔥 Error al enviar catálogo:", error);
-      // Mensaje de error amigable
-      const errorMsg = "Lo siento, tuve un problema al enviarte el catálogo. Puedes acceder a nuestro catálogo en línea en este enlace: https://s3.us-east-2.amazonaws.com/prueba.api.whatsapp/Copia+de+Catalogo+Dommo+%5BTama%C3%B1o+original%5D.pdf";
-      await whatsappService.sendMessage(to, errorMsg, messageId);
-      this.updateConversationHistory(to, 'assistant', errorMsg);
-      throw error;
-    }
-  }
-
-  // Método para enviar bienvenida (mejorado con IA)
-  // Método para enviar bienvenida (mejorado con IA y manejo de errores)
-async sendWelcomeMessage(to, messageId, senderInfo) {
-  try {
-    const senderName = this.getSenderName(senderInfo);
-    
-    // Actualizar perfil de usuario con el nombre
-    this.userProfiles.updateUserProfile(to, {
-      name: senderName,
-      firstContact: new Date()
-    });
-    
-    // MENSAJE PREDETERMINADO (en caso de que falle la IA)
-    let welcomeMessage = `¡Hola${senderName ? ' ' + senderName : ''}! Soy el asistente virtual de la tienda de rosas preservadas. ¿En qué puedo ayudarte hoy?`;
-    
-    try {
-      // Intentar generar mensaje personalizado con IA
-      const welcomePrompt = `
-        El usuario ${senderName} acaba de saludar por primera vez.
-        Genera un mensaje de bienvenida personalizado, amable y conciso.
-        Menciona que eres un asistente virtual y ofrece ayuda con productos o información.
-      `;
-      
-      const aiResponse = await this.generateContextualResponse(to, 'bienvenida', welcomePrompt);
-      
-      // Si la IA respondió correctamente, usar su respuesta
-      if (aiResponse && aiResponse.length > 20) {
-        welcomeMessage = aiResponse;
-        console.log("✅ Respuesta de bienvenida generada por IA");
-      }
-    } catch (aiError) {
-      console.error("⚠️ Error al generar bienvenida con IA, usando mensaje predeterminado:", aiError);
-      // Continuar con el mensaje predeterminado
-    }
-    
-    // Humanizar respuesta
-    try {
-      welcomeMessage = HumanLikeUtils.addResponseVariability(welcomeMessage);
-    } catch (humanizeError) {
-      console.error("⚠️ Error al humanizar respuesta:", humanizeError);
-      // Continuar con el mensaje sin humanizar
-    }
-    
-    // Añadir retraso humanizado antes de responder
-    try {
-      await HumanLikeUtils.simulateTypingIndicator(
-        to,
-        welcomeMessage.length,
-        messageId,
-        'normal'
-      );
-    } catch (typingError) {
-      console.error("⚠️ Error al simular escritura:", typingError);
-      // Continuar sin simulación
-    }
-    
-    // Enviar respuesta de bienvenida
-    await whatsappService.sendMessage(to, welcomeMessage, messageId);
-    
-    // Actualizar historial de conversación
-    this.updateConversationHistory(to, 'assistant', welcomeMessage);
-    console.log("✅ Mensaje de bienvenida enviado");
-    
-    return true;
-  } catch (error) {
-    console.error("❌ Error al enviar bienvenida:", error);
-    
-    // Mensaje de respaldo en caso de error fatal
-    try {
-      const fallbackMsg = `¡Hola! Soy el asistente virtual de la tienda de rosas preservadas. ¿En qué puedo ayudarte hoy?`;
-      await whatsappService.sendMessage(to, fallbackMsg, messageId);
-      this.updateConversationHistory(to, 'assistant', fallbackMsg);
-      
-      return true;
-    } catch (fallbackError) {
-      console.error("💥 Error fatal al enviar mensaje de respaldo:", fallbackError);
-      return false;
-    }
-  }
-}
-
-  // Método para obtener nombre del remitente
-  getSenderName(senderInfo) {
-    return senderInfo?.profile?.name || senderInfo.wa_id || '';
-  }
-
-  // Funciones de detección mejoradas
-  // Funciones de detección mejoradas
-isGreeting(message) {
-  const messageLower = message.toLowerCase();
-  
-  // Saludos comunes
-  const greetings = ['hey', 'hola', 'ola', 'buenos días', 'buenas tardes', 'buenas noches', 'saludos', 'qué tal', 'buen día'];
-  
-  // MEJORA: Detectar si el saludo es parte de una pregunta o consulta completa
-  const questionPattern = /\?/;
-  const requestPattern = /(necesito|quiero|busco|dame)/;
-  
-  // Si el mensaje contiene un saludo pero también una pregunta o solicitud,
-  // posiblemente es una consulta completa y no solo un saludo
-  const containsGreeting = greetings.some(greeting => messageLower.includes(greeting));
-  const isCompleteMessage = questionPattern.test(messageLower) || requestPattern.test(messageLower);
-  
-  // Si es un mensaje completo con saludo + consulta, no tratarlo solo como saludo
-  if (containsGreeting && isCompleteMessage && message.length > 15) {
-    console.log("🔍 Mensaje contiene saludo y consulta/pregunta, tratando como consulta completa");
-    return false;
-  }
-  
-  return containsGreeting;
-}
-
-  isQueryMessage(message) {
-    const messageLower = message.toLowerCase();
-    
-    // Detección normal de preguntas
-    if (message.includes('?')) {
-      return true;
-    }
-    
-    // Detectar palabras interrogativas comunes en español
-    const questionWords = ['que', 'qué', 'cual', 'cuál', 'como', 'cómo', 'donde', 'dónde', 
-      'cuando', 'cuándo', 'cuanto', 'cuánto', 'por qué', 'quién', 'quien', 'dime', 'explica', 'háblame'];
-    
-    // Detectar consultas explícitas
-    const queryPhrases = ['me puedes', 'puedes', 'podrías', 'podrias', 'me gustaría saber', 
-      'quiero saber', 'dame', 'dime', 'explica', 'info', 'información', 'cuéntame', 'cuentame',
-      'me gustaria', 'proceso', 'como es', 'cómo es', 'pasos', 'procedimiento'];
-    
-    // Detección para preguntas sobre procesos de compra
-    const purchaseKeywords = [
-      'proceso de compra', 'comprar', 'adquirir', 'pedido', 'ordenar', 'pagar', 
-      'cómo compro', 'como compro', 'forma de pago', 'método de pago', 'envío',
-      'entrega', 'domicilio', 'hacer un pedido', 'realizar compra', 'proceso'
-    ];
-    
-    return questionWords.some(word => messageLower.startsWith(word)) ||
-           queryPhrases.some(phrase => messageLower.includes(phrase)) ||
-           purchaseKeywords.some(keyword => messageLower.includes(keyword));
-  }
-
-  isPositiveResponse(message) {
-    const messageLower = message.toLowerCase();
-    const positiveKeywords = ['sí', 'si', 'claro', 'por supuesto', 'me gustaría', 'ok', 'okay', 'vale', 'bueno', 'está bien', 'de acuerdo', 'adelante'];
-    return positiveKeywords.some(keyword => messageLower.includes(keyword));
   }
 }
 

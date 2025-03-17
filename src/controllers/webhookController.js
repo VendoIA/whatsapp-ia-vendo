@@ -1,130 +1,76 @@
-// src/controllers/webhookController.js - VERSIÓN MEJORADA ANTI-DUPLICACIÓN
+// src/controllers/webhookController.js - VERSIÓN COMPLETAMENTE REESCRITA
 import config from '../config/env.js';
 import messageHandler from '../services/messageHandler.js';
 
-// Registro de webhooks para depuración y prevención de duplicados
+// Conjunto para registrar webhooks procesados y evitar duplicados
 const processedWebhooks = new Set();
 
-class WebhookController {
-  constructor() {
-    // Bind methods to preserve 'this' context
-    this.handleIncoming = this.handleIncoming.bind(this);
-    this.verifyWebhook = this.verifyWebhook.bind(this);
-    this.calculateWebhookHash = this.calculateWebhookHash.bind(this);
-  }
-
-  // Corrige el método handleIncoming en webhookController.js
-
-async handleIncoming(req, res) {
-  try {
-    // 1. Validación inicial de la estructura del webhook
-    if (!req.body || !req.body.object || !req.body.entry || !Array.isArray(req.body.entry) || req.body.entry.length === 0) {
-      console.log("🚫 Webhook con estructura inválida");
-      return res.sendStatus(400);
-    }
-    
-    // 2. Identificar el webhook con un hash para detectar duplicados
-    const webhookHash = this.calculateWebhookHash(req.body);
-    
-    // 3. Verificar si este webhook ya fue procesado
-    if (processedWebhooks.has(webhookHash)) {
-      console.log(`🔁 Webhook duplicado detectado [Hash: ${webhookHash.substring(0, 8)}...]`);
-      return res.sendStatus(200); // Responder OK pero no procesar
-    }
-    
-    // 4. Registrar este webhook como procesado
-    processedWebhooks.add(webhookHash);
-    
-    // Limpieza periódica del conjunto de webhooks procesados
-    if (processedWebhooks.size > 1000) {
-      // Si hay demasiados hashes almacenados, limpiar los más antiguos
-      const webhooksArray = Array.from(processedWebhooks);
-      const toRemove = webhooksArray.slice(0, 500); // Eliminar los 500 más antiguos
-      toRemove.forEach(hash => processedWebhooks.delete(hash));
-      console.log(`🧹 Limpieza de caché de webhooks: ${toRemove.length} eliminados`);
-    }
-    
-    // 5. Procesar el webhook
-    console.log(`📥 Webhook entrante [Hash: ${webhookHash.substring(0, 8)}...]`);
-    
-    let isValidMessage = false;
-    
-    // Recorrer la estructura de datos del webhook para encontrar mensajes
-    // CORREGIDO: La estructura del webhook puede variar, verificar ambos formatos
-    for (const entry of req.body.entry) {
-      // CORREGIDO: Comprobar si estamos usando 'changes' o 'messages' en la estructura
-      // Para formato antiguo con 'changes'
-      if (entry.changes && Array.isArray(entry.changes)) {
-        for (const change of entry.changes) {
-          if (!change.value || !change.value.messages || !Array.isArray(change.value.messages)) continue;
-          
-          for (const message of change.value.messages) {
-            // Solo procesar mensajes con ID y timestamp válidos
-            if (!message.id) continue;
-            
-            // Añadir el timestamp al objeto message para validación posterior
-            if (message.timestamp) {
-              message.timestamp = parseInt(message.timestamp) * 1000; // Convertir a milisegundos
-            } else {
-              message.timestamp = Date.now(); // Usar timestamp actual si no existe
+// Objeto simple en lugar de clase para evitar problemas con 'this'
+const webhookController = {
+  // Método para manejar webhooks entrantes
+  handleIncoming: async (req, res) => {
+    try {
+      // 1. Validación básica de la estructura
+      if (!req.body || !req.body.object) {
+        console.log("🚫 Webhook con estructura inválida");
+        return res.sendStatus(400);
+      }
+      
+      // 2. Crear un identificador único para este webhook
+      const webhookHash = createWebhookHash(req.body);
+      
+      // 3. Verificar si ya procesamos este webhook
+      if (processedWebhooks.has(webhookHash)) {
+        console.log(`🔁 Webhook duplicado detectado: ${webhookHash.substring(0, 8)}...`);
+        return res.sendStatus(200);
+      }
+      
+      // 4. Marcar este webhook como procesado
+      processedWebhooks.add(webhookHash);
+      
+      // Limpieza periódica si hay demasiados hashes almacenados
+      if (processedWebhooks.size > 1000) {
+        const oldHashes = Array.from(processedWebhooks).slice(0, 500);
+        oldHashes.forEach(hash => processedWebhooks.delete(hash));
+      }
+      
+      // 5. Procesar el webhook
+      console.log(`📥 Webhook entrante [Hash: ${webhookHash.substring(0, 8)}...]`);
+      
+      // Variable para rastrear si encontramos mensajes válidos
+      let isValidMessage = false;
+      
+      // Procesar entradas del webhook
+      if (req.body.entry && Array.isArray(req.body.entry)) {
+        for (const entry of req.body.entry) {
+          // Procesar los cambios si existen
+          if (entry.changes && Array.isArray(entry.changes)) {
+            for (const change of entry.changes) {
+              if (processMessages(change.value, isValidMessage)) {
+                isValidMessage = true;
+              }
             }
-            
-            const senderInfo = {
-              wa_id: message.from,
-              profile: change.value.contacts && change.value.contacts[0] ? 
-                change.value.contacts[0] : { name: message.from }
-            };
-            
-            try {
-              // Procesar el mensaje a través del messageHandler
-              await messageHandler.handleIncomingMessage(message, senderInfo);
+          }
+          
+          // También verificar mensajes directamente en el valor
+          if (entry.value) {
+            if (processMessages(entry.value, isValidMessage)) {
               isValidMessage = true;
-            } catch (err) {
-              console.error(`❌ Error al procesar mensaje [ID: ${message.id}]:`, err);
             }
           }
         }
       }
       
-      // Para formato nuevo directo en el valor
-      if (entry.value && entry.value.messages && Array.isArray(entry.value.messages)) {
-        for (const message of entry.value.messages) {
-          // Solo procesar mensajes con ID y timestamp válidos
-          if (!message.id) continue;
-          
-          // Añadir el timestamp al objeto message para validación posterior
-          if (message.timestamp) {
-            message.timestamp = parseInt(message.timestamp) * 1000; // Convertir a milisegundos
-          } else {
-            message.timestamp = Date.now(); // Usar timestamp actual si no existe
-          }
-          
-          const senderInfo = {
-            wa_id: message.from,
-            profile: entry.value.contacts && entry.value.contacts[0] ? 
-              entry.value.contacts[0] : { name: message.from }
-          };
-          
-          try {
-            // Procesar el mensaje a través del messageHandler
-            await messageHandler.handleIncomingMessage(message, senderInfo);
-            isValidMessage = true;
-          } catch (err) {
-            console.error(`❌ Error al procesar mensaje [ID: ${message.id}]:`, err);
-          }
-        }
-      }
+      console.log(`📤 Webhook procesado: ${isValidMessage ? 'con mensajes válidos' : 'sin mensajes válidos'}`);
+      return res.sendStatus(200);
+    } catch (error) {
+      console.error("💥 Error en manejo de webhook:", error);
+      return res.sendStatus(500);
     }
-    
-    console.log(`📤 Webhook procesado: ${isValidMessage ? 'con mensajes válidos' : 'sin mensajes válidos'}`);
-    return res.sendStatus(200);
-  } catch (error) {
-    console.error("💥 Error en manejo de webhook:", error);
-    return res.sendStatus(500);
-  }
-}
+  },
 
-  verifyWebhook(req, res) {
+  // Método para verificar el webhook
+  verifyWebhook: (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
@@ -137,40 +83,90 @@ async handleIncoming(req, res) {
       res.sendStatus(403);
     }
   }
+};
 
-  // Función para calcular un hash único para un webhook
-  calculateWebhookHash(webhookData) {
+// Función auxiliar para procesar mensajes de un valor de webhook
+function processMessages(value, currentValidState) {
+  if (!value || !value.messages || !Array.isArray(value.messages)) {
+    return currentValidState;
+  }
+  
+  let foundValidMessage = currentValidState;
+  
+  for (const message of value.messages) {
+    // Validar mensaje
+    if (!message.id || !message.from) continue;
+    
+    // Asegurar timestamp correcto
+    if (message.timestamp) {
+      message.timestamp = parseInt(message.timestamp) * 1000;
+    } else {
+      message.timestamp = Date.now();
+    }
+    
+    // Preparar información del remitente
+    const senderInfo = {
+      wa_id: message.from,
+      profile: value.contacts && value.contacts[0] ? value.contacts[0] : { name: message.from }
+    };
+    
     try {
-      // Extraer IDs de mensajes y timestamps
-      const messageIds = [];
-      let entries = webhookData.entry || [];
-      
-      for (const entry of entries) {
-        if (!entry.changes) continue;
+      // Procesar mensaje a través del manejador
+      messageHandler.handleIncomingMessage(message, senderInfo);
+      foundValidMessage = true;
+    } catch (err) {
+      console.error(`❌ Error al procesar mensaje [ID: ${message.id}]:`, err);
+    }
+  }
+  
+  return foundValidMessage;
+}
+
+// Función para generar un hash único para cada webhook
+function createWebhookHash(webhookData) {
+  try {
+    // Extraer IDs de mensajes
+    const messageIds = [];
+    
+    // Recorrer entradas y cambios para encontrar IDs de mensajes
+    if (webhookData.entry && Array.isArray(webhookData.entry)) {
+      for (const entry of webhookData.entry) {
+        // Buscar en changes
+        if (entry.changes && Array.isArray(entry.changes)) {
+          for (const change of entry.changes) {
+            if (change.value && change.value.messages && Array.isArray(change.value.messages)) {
+              for (const message of change.value.messages) {
+                if (message.id) {
+                  messageIds.push(message.id);
+                }
+              }
+            }
+          }
+        }
         
-        for (const change of entry.changes) {
-          if (!change.value || !change.value.messages) continue;
-          
-          for (const message of change.value.messages) {
+        // Buscar directamente en value
+        if (entry.value && entry.value.messages && Array.isArray(entry.value.messages)) {
+          for (const message of entry.value.messages) {
             if (message.id) {
               messageIds.push(message.id);
             }
           }
         }
       }
-      
-      if (messageIds.length === 0) {
-        // Si no hay mensajes, usar toda la estructura
-        return JSON.stringify(webhookData);
-      }
-      
-      // Devolver un identificador único basado en los IDs de los mensajes
+    }
+    
+    if (messageIds.length > 0) {
+      // Ordenar y unir para generar un identificador único
       return messageIds.sort().join('|');
-    } catch (e) {
-      // En caso de error, usar un método más simple
+    } else {
+      // Si no hay IDs de mensajes, usar una representación limitada del webhook
       return JSON.stringify(webhookData).substring(0, 100);
     }
+  } catch (error) {
+    console.error("Error al generar hash de webhook:", error);
+    // Fallback simple en caso de error
+    return new Date().toISOString() + Math.random().toString();
   }
 }
 
-export default new WebhookController();
+export default webhookController;
